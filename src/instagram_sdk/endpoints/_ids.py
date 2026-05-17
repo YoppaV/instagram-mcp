@@ -1,7 +1,13 @@
-"""Shared id/username parsers, URL builders, and ``/api/v1`` path fragments.
+"""Shared id/username parsers, URL builders, and endpoint identifiers.
 
-This is the single place to patch when Instagram rotates its endpoint paths —
-see the "When the endpoints change" section of ``.claude/CLAUDE.md``.
+This is the single place to patch when Instagram rotates its endpoints — see
+the "When the endpoints change" section of ``.claude/CLAUDE.md``.
+
+Instagram's web app drives almost everything through ``/api/graphql`` POST
+requests, distinguished by the ``fb_api_req_friendly_name`` form field — those
+names are the ``FN_*`` constants. A few feeds are still plain REST endpoints
+with a distinctive URL path — those are the ``FR_*`` constants. A single post
+page embeds its data in the server-rendered HTML — that is ``EMBED_POST_KEY``.
 """
 
 from __future__ import annotations
@@ -11,16 +17,20 @@ import re
 
 BASE = "https://www.instagram.com"
 
-# Path fragments matched against intercepted response URLs. Each is a stable
-# substring of an ``/api/v1/...`` (or ``/graphql``) request the web app fires.
-FR_TIMELINE = "/api/v1/feed/timeline/"
-FR_WEB_PROFILE = "/api/v1/users/web_profile_info/"
-FR_USER_FEED = "/api/v1/feed/user/"
-FR_GRAPHQL = "/graphql/query"
-FR_CLIPS = "/api/v1/clips/user/"
+# GraphQL operations — matched against the request's fb_api_req_friendly_name.
+# The home feed's first page is embedded in the HTML; this query paginates it.
+FN_TIMELINE = "PolarisFeedRootPaginationCachedQuery_subscribe"
+FN_PROFILE = "PolarisProfilePageContentQuery"
+FN_PROFILE_POSTS = "PolarisProfilePostsQuery"
+FN_REELS = "PolarisProfileReelsTabContentQuery"
+FN_COLLECTIONS = "PolarisProfileSavedTabContentQuery"
+
+# REST feeds — matched against a substring of the response URL.
 FR_SAVED = "/api/v1/feed/saved/posts/"
 FR_COLLECTION_FEED = "/api/v1/feed/collection/"
-FR_COLLECTIONS_LIST = "/api/v1/collections/list/"
+
+# A single post page server-renders its data into the HTML under this key.
+EMBED_POST_KEY = "xdt_api__v1__media__shortcode__web_info"
 
 # Hard ceiling on scroll iterations regardless of the requested limit.
 MAX_SCROLLS_CAP = 60
@@ -68,7 +78,7 @@ def reels_url(username: str) -> str:
 
 
 def saved_url(handle: str) -> str:
-    """The saved-posts landing page — fires the collections list."""
+    """The saved-posts landing page — shows the list of collections."""
     return f"{BASE}/{handle}/saved/"
 
 
@@ -80,20 +90,19 @@ def saved_all_url(handle: str) -> str:
 def collection_url(handle: str, collection_id: str) -> str:
     """A specific saved collection's page.
 
-    Instagram's canonical URL also carries a name slug
-    (``/saved/<slug>/<id>/``); the bare-id form generally redirects there.
-    If a collection ever fails to load, confirm the live URL in DevTools.
+    Instagram's route is ``/saved/<slug>/<id>/`` and it ignores the slug (it
+    redirects to the canonical one), so the id is repeated as a placeholder.
     """
-    return f"{BASE}/{handle}/saved/{collection_id}/"
+    return f"{BASE}/{handle}/saved/{collection_id}/{collection_id}/"
 
 
 def scroll_budget(limit: int | None) -> int:
     """How many scroll iterations to allow for a requested ``limit``.
 
-    Instagram serves roughly ten items per paginated request; allow a little
-    slack, but never exceed ``MAX_SCROLLS_CAP`` — runaway scrolling is exactly
-    what trips automation defenses.
+    Instagram serves roughly a dozen items per page; allow a little slack, but
+    never exceed ``MAX_SCROLLS_CAP`` — runaway scrolling is exactly what trips
+    automation defenses.
     """
     if not limit or limit <= 0:
         return MAX_SCROLLS_CAP
-    return min(MAX_SCROLLS_CAP, math.ceil(limit / 10) + 2)
+    return min(MAX_SCROLLS_CAP, math.ceil(limit / 10) + 4)

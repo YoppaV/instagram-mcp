@@ -25,13 +25,26 @@ All tools return plain JSON (dataclass → dict). No mutations: read-only by des
 
 ## How Instagram differs from Twitter
 
-Twitter serves its data over GraphQL. Instagram's web app serves data mostly
-from JSON endpoints under `/api/v1/...` (plus a `/graphql/query` call for a
-single post page). We never craft signed HTTP requests by hand — Instagram
-requires headers like `X-IG-App-ID` and CSRF tokens. Instead, exactly as in
-`twitter-mcp`, Playwright navigates to the real page, scrolls, and
-**intercepts the JSON responses the web app itself fires** — Instagram signs
-those requests for us.
+We never craft signed HTTP requests by hand — Instagram requires headers like
+`X-IG-App-ID` and CSRF tokens. Instead, exactly as in `twitter-mcp`, Playwright
+navigates to the real page, scrolls, and **intercepts the JSON responses the
+web app itself fires** — Instagram signs those requests for us.
+
+What it fires, as of 2026:
+
+- **GraphQL** — most feeds POST to `/api/graphql` (or `/graphql/query`). The
+  URL is the same for every operation; they are told apart by the
+  `fb_api_req_friendly_name` field in the request body (e.g.
+  `PolarisProfilePostsQuery`). Those names are the `FN_*` constants in
+  `endpoints/_ids.py`.
+- **REST** — saved posts and collection feeds are still plain
+  `GET /api/v1/feed/...` endpoints with a distinctive URL path (`FR_*`).
+- **Embedded HTML** — a single post page and the home feed's *first* batch are
+  server-rendered into `<script type="application/json">` blobs, not fetched
+  over a separate request. `parsers.find_embedded` digs those out.
+
+`scraper._matches` recognizes a response by either its friendly name or a URL
+substring, so one `fragment` string covers both transport styles.
 
 ## Architecture
 
@@ -44,7 +57,7 @@ src/instagram_sdk/
 ├── parsers.py         # Instagram JSON → dataclass extractors (pure)
 ├── scraper.py         # scroll_collect() + intercept_single_response()
 └── endpoints/
-    ├── _ids.py        # URL builders + the /api/v1 path fragment constants
+    ├── _ids.py        # URL builders + the FN_*/FR_* endpoint identifiers
     ├── saved.py       # get_saved_posts · get_saved_collections
     ├── home.py        # get_home_feed
     ├── profile.py     # get_user_profile · get_user_posts · get_user_reels
@@ -52,10 +65,11 @@ src/instagram_sdk/
 ```
 
 `scraper.scroll_collect` is generic over the item type (`Post`, `Reel`); pass
-`key_of=` to dedupe. Its `fragment` argument accepts either one path substring
-or a tuple — `get_user_posts` uses a tuple to merge the ~12 posts embedded in
-`web_profile_info` with the rest from the `feed/user` pagination endpoint.
-`get_user_profile` and `get_post` use `intercept_single_response` (no scrolling).
+`key_of=` to dedupe, `keep=` to filter items before they count toward `limit`
+(how `get_user_posts` excludes reels), and `embed_extractor=` to seed items
+from the landing page's HTML (how `get_home_feed` picks up its first batch).
+`get_user_profile` uses `intercept_single_response` (no scrolling); `get_post`
+uses `fetch_rendered_html` and parses the embedded JSON.
 
 ## Running the server
 
@@ -139,53 +153,59 @@ venv/bin/python -m unittest discover tests -v
 ```
 
 unittest stdlib only — no pytest. Tests are fixture-driven
-(`tests/fixtures/api_*.json`, `graphql_*.json`) and never touch the network or
-a real browser. The endpoint tests use a `FakePage` that records response
-handlers and dispatches synthetic JSON payloads through them.
+(`tests/fixtures/gql_*.json`, `api_*.json`, `post_page.html`) and never touch
+the network or a real browser. The endpoint tests use a `FakePage` that records
+response handlers and dispatches synthetic payloads through them.
+
+## Current endpoint map
+
+Verified live (May 2026). Every identifier below is a constant in
+`src/instagram_sdk/endpoints/_ids.py` — the one file to patch when Instagram
+rotates things.
+
+| Tool | Recognized by | Response shape |
+|---|---|---|
+| `get_home_feed` | `FN_TIMELINE` (`PolarisFeedRootPaginationCachedQuery_subscribe`) + first batch embedded in `/` HTML | `data.xdt_api__v1__feed__timeline__connection.edges[].node.media` |
+| `get_user_profile` | `FN_PROFILE` (`PolarisProfilePageContentQuery`) | `data.user` |
+| `get_user_posts` | `FN_PROFILE_POSTS` (`PolarisProfilePostsQuery`) | `data.xdt_api__v1__feed__user_timeline_graphql_connection.edges[].node` |
+| `get_user_reels` | `FN_REELS` (`PolarisProfileReelsTabContentQuery`) | `data.xdt_api__v1__clips__user__connection_v2.edges[].node.media` |
+| `get_saved_collections` | `FN_COLLECTIONS` (`PolarisProfileSavedTabContentQuery`) | `data.xdt_api__v1__collections__list_graphql_connection.edges[].node` |
+| `get_saved_posts` | `FR_SAVED` / `FR_COLLECTION_FEED` (REST) | `items[].media` |
+| `get_post` | embedded HTML key `EMBED_POST_KEY` (`xdt_api__v1__media__shortcode__web_info`) | `items[0]` |
+
+Notes:
+- A profile grid mixes posts and reels; `get_user_posts` excludes reels by
+  default. For a reels-heavy account it may return fewer than `limit` posts —
+  ask with `include_reels=True` for the raw grid.
+- The reels-tab payload is light: `Reel.video_url` / `caption` come back
+  `null`. Call `get_post(<shortcode>)` for a reel's full media.
 
 ## When the endpoints change
 
-Instagram rotates its internal endpoints and JSON shapes every few weeks. All
-the path fragments we match against live in **one file** —
-`src/instagram_sdk/endpoints/_ids.py` (`FR_TIMELINE`, `FR_WEB_PROFILE`,
-`FR_USER_FEED`, `FR_GRAPHQL`, `FR_CLIPS`, `FR_SAVED`, `FR_COLLECTION_FEED`,
-`FR_COLLECTIONS_LIST`).
+Instagram rotates these every few weeks. If a tool starts returning empty lists:
 
-If a tool starts returning empty lists:
-
-1. Open the relevant instagram.com page in a browser with DevTools → Network
-   tab open (filter `api/v1`):
+1. Open the relevant page in a browser with DevTools → Network tab open:
    - home feed → scroll `https://www.instagram.com/`
    - profile → `https://www.instagram.com/<username>/`
-   - a post → `https://www.instagram.com/p/<shortcode>/`
    - reels → `https://www.instagram.com/<username>/reels/`
    - saved → `https://www.instagram.com/<yourhandle>/saved/`
-2. Find the request that carries the items you expect (it usually has
-   `next_max_id` / `more_available` in the response, or `feed_items` for the
-   home timeline).
-3. If the path moved, update the matching `FR_*` constant in `_ids.py`.
-4. Save the JSON response into `tests/fixtures/` as `api_<name>.json` (or
-   `graphql_<name>.json` for the post query), trim/anonymize it, and add a
-   parser test in `tests/test_parsers.py`.
+   - a post → `https://www.instagram.com/p/<shortcode>/`
+2. Watch the requests to `/api/graphql` and `/graphql/query`. For each, the
+   request's form body has an `fb_api_req_friendly_name` — that is the name we
+   match. Find the one whose response carries the items you expect.
+3. If the friendly name changed, update the matching `FN_*` constant in
+   `_ids.py`; if a REST path moved, update the `FR_*` constant. If the JSON
+   shape changed, adjust the connection key / fields in the relevant
+   `extract_*` or `parse_*` function in `parsers.py`.
+4. Save a real response into `tests/fixtures/` (`gql_<name>.json` for GraphQL,
+   `api_<name>.json` for REST), trim/anonymize it, and add a parser test.
 
-The parsers in `parsers.py` are deliberately tolerant — `parse_post` sniffs
-whether it got the private-API shape (`media_type`, `image_versions2`) or the
-GraphQL shape (`__typename`, `display_url`) and normalizes both. If only the
-field *names* inside a payload changed, adjust the relevant `parse_*` helper
-and re-run the fixture tests.
+To capture a friendly name + body quickly, a throwaway script can register a
+Playwright `page.on("response", ...)` handler, read
+`response.request.post_data` for the `fb_api_req_friendly_name`, and dump
+`response.text()` — that is exactly how this map was built.
 
-### Endpoints to confirm against a live session
-
-These were built against the documented/expected Instagram web shapes and
-should be verified once in DevTools with a real logged-in account:
-
-- `feed/user/{id}` — whether each item is the media directly or under `item["media"]`
-  (the parser tolerates both).
-- The live `/graphql/query` `doc_id` for a post page, and that the response key
-  is still `data.xdt_shortcode_media`.
-- A specific saved collection's URL — `collection_url()` in `_ids.py` builds
-  `/<handle>/saved/<collection_id>/`; if Instagram requires the name slug,
-  patch that builder.
-- Whether `web_profile_info` still embeds the first posts in
-  `edge_owner_to_timeline_media.edges` (it is unreliable per-account — the
-  `feed/user` fallback covers an empty `edges`).
+`parse_post` is deliberately tolerant: it accepts any media node carrying
+`media_type` / `image_versions2` / `code`, so a node moving between feeds
+keeps parsing. If only field *names* changed, fix the relevant helper and
+re-run the fixture tests.

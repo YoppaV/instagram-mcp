@@ -13,8 +13,8 @@ from ..models import Collection, Post
 from ..parsers import extract_collections, extract_saved
 from ..scraper import intercept_single_response, scroll_collect
 from ._ids import (
+    FN_COLLECTIONS,
     FR_COLLECTION_FEED,
-    FR_COLLECTIONS_LIST,
     FR_SAVED,
     collection_url,
     normalize_username,
@@ -55,12 +55,12 @@ async def fetch_saved(
 
 
 async def fetch_collections(page: "Page", *, handle: str) -> list[Collection]:
-    """List the user's save-collections (plus the implicit "All Posts")."""
+    """List the user's save-collections (including the implicit "All Posts")."""
     h = normalize_username(handle)
     result = await intercept_single_response(
         page,
         saved_url(h),
-        FR_COLLECTIONS_LIST,
+        FN_COLLECTIONS,
         extract_collections,
     )
     return result if isinstance(result, list) else []

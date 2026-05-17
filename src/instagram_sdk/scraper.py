@@ -1,17 +1,23 @@
-"""Generic JSON-intercept + scroll loop reused by every list endpoint.
+"""Generic response-intercept + scroll loop reused by every list endpoint.
 
 The shape: navigate to an instagram.com URL, install a
-``page.on("response", ...)`` handler that filters by ``/api/v1/...`` path
-fragment and feeds matching payloads to a parser, then scroll until the limit
-is reached or the feed goes quiet. Instagram fires its own signed XHRs as you
-scroll — we never craft requests ourselves.
+``page.on("response", ...)`` handler that recognizes the JSON responses we
+care about, and scroll until the limit is reached or the feed goes quiet.
+Instagram fires its own signed requests as you scroll — we never craft any.
 
-Single-fetch endpoints (a single post, a profile header) use
-``intercept_single_response`` instead — same handler pattern, no scrolling.
+Recognizing a response:
+* GraphQL operations all POST to ``/api/graphql``; they are told apart by the
+  ``fb_api_req_friendly_name`` field in the request body.
+* A few feeds are plain REST endpoints with a distinctive URL path.
 
-Pacing is deliberately slow. Instagram detects automation far more
-aggressively than other networks, so every delay range here is conservative
-and randomized; do not tighten them.
+A single ``fragment`` string covers both — it matches if it equals the
+request's friendly name OR appears in the response URL.
+
+Single-fetch endpoints use ``intercept_single_response``; a single post page
+is server-rendered, so ``fetch_rendered_html`` just returns its HTML.
+
+Pacing is deliberately slow — Instagram detects automation aggressively, so
+every delay range here is conservative and randomized. Do not tighten them.
 """
 
 from __future__ import annotations
@@ -28,18 +34,19 @@ if TYPE_CHECKING:
 # Conservative, randomized pacing — see module docstring.
 PRE_NAV_DELAY_RANGE_S: tuple[float, float] = (1.5, 3.0)
 SCROLL_DELAY_RANGE_S: tuple[float, float] = (3.0, 6.5)
-SCROLL_PIXELS_RANGE: tuple[int, int] = (600, 900)
+# Jump to the bottom each step — that is what reliably drives Instagram's
+# infinite scroll; small fixed increments often never trip the loader.
+_SCROLL_TO_BOTTOM = "window.scrollTo(0, document.body.scrollHeight)"
 DEFAULT_MAX_SCROLLS = 60
-EMPTY_SCROLLS_BEFORE_STOP = 3
+EMPTY_SCROLLS_BEFORE_STOP = 4
 SINGLE_FETCH_TIMEOUT_S = 25.0
 
 _RELOGIN_HINT = "re-run: python -m scripts.auth_login"
 _SESSION_EXPIRED_MSG = f"Instagram session expired — {_RELOGIN_HINT}"
+_FRIENDLY_NAME_FIELD = "fb_api_req_friendly_name="
 
 T = TypeVar("T")
 Extractor = Callable[[dict[str, Any]], list[T]]
-# A fragment is either one path substring or several to match against.
-Fragment = "str | tuple[str, ...]"
 
 
 def _default_key_of(item: Any) -> str:
@@ -47,10 +54,33 @@ def _default_key_of(item: Any) -> str:
     return getattr(item, "id", "") or ""
 
 
-def _url_matches(url: str, fragment: "str | tuple[str, ...]") -> bool:
-    if isinstance(fragment, str):
-        return fragment in url
-    return any(frag in url for frag in fragment)
+def _friendly_name(response: "Response") -> str:
+    """The ``fb_api_req_friendly_name`` of the request that produced ``response``."""
+    try:
+        post_data = response.request.post_data
+    except Exception:
+        return ""
+    if not post_data:
+        return ""
+    for part in post_data.split("&"):
+        if part.startswith(_FRIENDLY_NAME_FIELD):
+            return part[len(_FRIENDLY_NAME_FIELD):]
+    return ""
+
+
+def _matches(response: "Response", fragment: "str | tuple[str, ...]") -> bool:
+    """True if ``fragment`` names this response (by URL path or friendly name)."""
+    fragments = (fragment,) if isinstance(fragment, str) else tuple(fragment)
+    url = response.url
+    friendly: str | None = None
+    for frag in fragments:
+        if frag in url:
+            return True
+        if friendly is None:
+            friendly = _friendly_name(response)
+        if frag and frag == friendly:
+            return True
+    return False
 
 
 def _make_response_handler(
@@ -59,15 +89,18 @@ def _make_response_handler(
     collected: dict[str, T],
     order: list[str],
     key_of: Callable[[T], str],
+    keep: Callable[[T], bool] | None,
 ) -> Callable[["Response"], Awaitable[None]]:
     async def on_response(response: "Response") -> None:
-        if not _url_matches(response.url, fragment):
+        if not _matches(response, fragment):
             return
         try:
             payload = await response.json()
         except Exception:
             return
         for item in extractor(payload):
+            if keep is not None and not keep(item):
+                continue
             key = key_of(item)
             if not key or key in collected:
                 continue
@@ -81,6 +114,22 @@ async def _sleep_jitter(rng: tuple[float, float]) -> None:
     await asyncio.sleep(random.uniform(*rng))
 
 
+def _seed(
+    items: list[T],
+    collected: dict[str, T],
+    order: list[str],
+    key_of: Callable[[T], str],
+    keep: Callable[[T], bool] | None,
+) -> None:
+    for item in items:
+        if keep is not None and not keep(item):
+            continue
+        key = key_of(item)
+        if key and key not in collected:
+            collected[key] = item
+            order.append(key)
+
+
 async def scroll_collect(
     page: "Page",
     initial_url: str,
@@ -91,14 +140,17 @@ async def scroll_collect(
     max_scrolls: int = DEFAULT_MAX_SCROLLS,
     empty_streak_stop: int = EMPTY_SCROLLS_BEFORE_STOP,
     key_of: Callable[[T], str] | None = None,
+    keep: Callable[[T], bool] | None = None,
+    embed_extractor: Callable[[str], list[T]] | None = None,
 ) -> list[T]:
     """Scroll ``initial_url`` and collect items parsed from ``fragment``.
 
     Stops when ``limit`` is reached, when scrolling produces no new items for
     ``empty_streak_stop`` iterations, or when ``max_scrolls`` is exhausted.
-    ``fragment`` may be one path substring or a tuple of them (to merge two
-    endpoints — e.g. a profile's embedded posts plus its paginated feed).
-    ``key_of`` defaults to ``item.id``.
+    ``key_of`` defaults to ``item.id``. ``keep``, if given, filters items
+    before they count toward ``limit`` (skipped items are still scrolled
+    past). ``embed_extractor`` is run once over the landing page's HTML to
+    seed items Instagram server-renders instead of fetching.
     """
     if key_of is None:
         key_of = _default_key_of
@@ -106,7 +158,7 @@ async def scroll_collect(
     order: list[str] = []
 
     handler = _make_response_handler(
-        fragment, extractor, collected, order, key_of=key_of
+        fragment, extractor, collected, order, key_of=key_of, keep=keep
     )
     page.on("response", handler)
 
@@ -116,7 +168,14 @@ async def scroll_collect(
         if is_login_redirect(page.url):
             raise SessionExpiredError(_SESSION_EXPIRED_MSG)
 
-        # The initial XHRs fire on navigation; give them a moment.
+        if embed_extractor is not None:
+            try:
+                html = await page.content()
+            except Exception:
+                html = ""
+            _seed(embed_extractor(html), collected, order, key_of, keep)
+
+        # The initial requests fire on navigation; give them a moment.
         await _sleep_jitter(SCROLL_DELAY_RANGE_S)
         if _should_stop(collected, limit):
             return _materialize(collected, order, limit)
@@ -124,8 +183,7 @@ async def scroll_collect(
         empty_streak = 0
         for _ in range(max_scrolls):
             before = len(collected)
-            pixels = random.randint(*SCROLL_PIXELS_RANGE)
-            await page.evaluate(f"window.scrollBy(0, {pixels})")
+            await page.evaluate(_SCROLL_TO_BOTTOM)
             await _sleep_jitter(SCROLL_DELAY_RANGE_S)
             if _should_stop(collected, limit):
                 break
@@ -172,10 +230,9 @@ async def intercept_single_response(
 ) -> "T | list[T] | None":
     """Navigate once and return the first matching payload's parse.
 
-    Used by endpoints that don't scroll (a single post, a profile header).
-    The ``extractor`` may return ``None`` to reject a payload that matched the
-    URL fragment but isn't the JSON we want (Instagram fires several GraphQL
-    calls on a post page) — the handler then keeps waiting.
+    The ``extractor`` may return ``None`` to reject a response that matched
+    the fragment but isn't the JSON we want (Instagram fires many GraphQL
+    calls per page) — the handler then keeps waiting.
 
     Returns ``None`` if nothing usable was observed within ``timeout_s``.
     ``SINGLE_FETCH_TIMEOUT_S`` is looked up at call time so tests can patch it.
@@ -186,9 +243,7 @@ async def intercept_single_response(
     done = asyncio.Event()
 
     async def on_response(response: "Response") -> None:
-        if done.is_set():
-            return
-        if not _url_matches(response.url, fragment):
+        if done.is_set() or not _matches(response, fragment):
             return
         try:
             payload = await response.json()
@@ -219,3 +274,17 @@ async def intercept_single_response(
             pass
 
     return result_holder[0] if result_holder else None
+
+
+async def fetch_rendered_html(page: "Page", url: str) -> str:
+    """Navigate to ``url`` and return its server-rendered HTML.
+
+    Used for the single-post page, whose data Instagram embeds in the HTML
+    rather than serving over a separate request.
+    """
+    await _sleep_jitter(PRE_NAV_DELAY_RANGE_S)
+    await page.goto(url, wait_until="domcontentloaded")
+    if is_login_redirect(page.url):
+        raise SessionExpiredError(_SESSION_EXPIRED_MSG)
+    await _sleep_jitter(SCROLL_DELAY_RANGE_S)
+    return await page.content()

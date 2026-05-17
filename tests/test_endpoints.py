@@ -1,10 +1,11 @@
 """Endpoint integration tests with a faked Playwright Page.
 
-Each test stands up a ``FakePage`` that records response handlers, then
-synthesizes ``FakeResponse`` objects carrying captured ``/api/v1`` fixtures and
-dispatches them through the handler on ``goto``. The endpoint code is exercised
-end-to-end except for real browser IO and scrolling sleeps (``asyncio.sleep``
-is monkey-patched to a no-op).
+A ``FakePage`` records response handlers and fires synthetic ``FakeResponse``
+objects through them on ``goto``. GraphQL responses carry an
+``fb_api_req_friendly_name`` (in a fake request body) exactly as Instagram's
+do; REST responses are matched by URL. The endpoint code runs end-to-end
+except for real browser IO and scrolling sleeps (``asyncio.sleep`` is patched
+to a no-op).
 
 Run with: ``venv/bin/python -m unittest tests.test_endpoints -v``
 """
@@ -32,35 +33,49 @@ def _load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def _text(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+class FakeRequest:
+    def __init__(self, friendly: str | None) -> None:
+        self.method = "POST" if friendly else "GET"
+        self.post_data = (
+            f"av=1&fb_api_req_friendly_name={friendly}&variables=%7B%7D"
+            if friendly
+            else None
+        )
+
+
 class FakeResponse:
     """Mimics a playwright.async_api.Response for the response handler."""
 
-    def __init__(self, url: str, payload: dict[str, Any]) -> None:
+    def __init__(
+        self, url: str, payload: dict[str, Any], *, friendly: str | None = None
+    ) -> None:
         self.url = url
         self._payload = payload
+        self.request = FakeRequest(friendly)
 
     async def json(self) -> dict[str, Any]:
         return self._payload
 
 
 class FakePage:
-    """Minimal Page double.
-
-    The endpoint installs a ``response`` listener; the page fires synthetic
-    responses through it on ``goto``.
-    """
+    """Minimal Page double — fires synthetic responses on ``goto``."""
 
     def __init__(
         self,
         *,
         url: str = "https://www.instagram.com/",
         responses: list[FakeResponse] | None = None,
+        html: str = "<html></html>",
     ) -> None:
         self.url = url
         self._responses = responses or []
+        self._html = html
         self._listeners: dict[str, list[Callable[..., Awaitable[None]]]] = {}
         self.scroll_calls = 0
-        self.evaluate_calls: list[str] = []
         self.goto_calls: list[str] = []
 
     def on(self, event: str, handler: Callable[..., Any]) -> None:
@@ -75,8 +90,10 @@ class FakePage:
         await self._fire_responses()
 
     async def evaluate(self, script: str) -> None:
-        self.evaluate_calls.append(script)
         self.scroll_calls += 1
+
+    async def content(self) -> str:
+        return self._html
 
     async def _fire_responses(self) -> None:
         for response in self._responses:
@@ -95,15 +112,22 @@ def _run(coro: Awaitable[Any]) -> Any:
     return asyncio.run(coro)
 
 
-def _api(fragment: str) -> str:
-    return f"https://i.instagram.com{fragment}?count=12"
+GRAPHQL_URL = "https://www.instagram.com/api/graphql"
+TIMELINE_FN = "PolarisFeedRootPaginationCachedQuery_subscribe"
+
+
+def _embed_html(payload: dict[str, Any]) -> str:
+    """Wrap a payload in a script tag the way Instagram server-renders data."""
+    return f'<script type="application/json">{json.dumps(payload)}</script>'
 
 
 class HomeEndpointTests(unittest.TestCase):
     def test_returns_posts_skipping_ads(self) -> None:
         page = FakePage(
             responses=[
-                FakeResponse(_api("/api/v1/feed/timeline/"), _load("api_timeline.json"))
+                FakeResponse(
+                    GRAPHQL_URL, _load("gql_timeline.json"), friendly=TIMELINE_FN
+                )
             ]
         )
         with _no_sleep_patch():
@@ -114,24 +138,50 @@ class HomeEndpointTests(unittest.TestCase):
     def test_limit_caps_results(self) -> None:
         page = FakePage(
             responses=[
-                FakeResponse(_api("/api/v1/feed/timeline/"), _load("api_timeline.json"))
+                FakeResponse(
+                    GRAPHQL_URL, _load("gql_timeline.json"), friendly=TIMELINE_FN
+                )
             ]
         )
         with _no_sleep_patch():
             posts = _run(home.fetch(page, limit=1))
         self.assertEqual(len(posts), 1)
 
+    def test_seeds_from_embedded_html(self) -> None:
+        # No pagination responses — posts come only from the embedded HTML.
+        page = FakePage(html=_embed_html(_load("gql_timeline.json")))
+        with _no_sleep_patch():
+            posts = _run(home.fetch(page, limit=10))
+        self.assertEqual([p.id for p in posts], ["1001_10", "1002_20"])
 
-class ProfileEndpointTests(unittest.TestCase):
-    def test_fetch_profile(self) -> None:
+    def test_embedded_and_paginated_are_deduped(self) -> None:
         page = FakePage(
+            html=_embed_html(_load("gql_timeline.json")),
             responses=[
                 FakeResponse(
-                    _api("/api/v1/users/web_profile_info/"),
-                    _load("api_web_profile_info.json"),
+                    GRAPHQL_URL, _load("gql_timeline.json"), friendly=TIMELINE_FN
+                )
+            ],
+        )
+        with _no_sleep_patch():
+            posts = _run(home.fetch(page, limit=10))
+        self.assertEqual([p.id for p in posts], ["1001_10", "1002_20"])
+
+
+class ProfileEndpointTests(unittest.TestCase):
+    def _profile_page(self) -> FakePage:
+        return FakePage(
+            responses=[
+                FakeResponse(
+                    GRAPHQL_URL,
+                    _load("gql_profile.json"),
+                    friendly="PolarisProfilePageContentQuery",
                 )
             ]
         )
+
+    def test_fetch_profile(self) -> None:
+        page = self._profile_page()
         result = _run(profile.fetch_profile(page, username="carol"))
         assert result is not None
         self.assertEqual(result.username, "carol")
@@ -139,56 +189,37 @@ class ProfileEndpointTests(unittest.TestCase):
         self.assertEqual(page.goto_calls, ["https://www.instagram.com/carol/"])
 
     def test_fetch_profile_strips_at_prefix(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(
-                    _api("/api/v1/users/web_profile_info/"),
-                    _load("api_web_profile_info.json"),
-                )
-            ]
-        )
+        page = self._profile_page()
         _run(profile.fetch_profile(page, username="@carol"))
         self.assertEqual(page.goto_calls, ["https://www.instagram.com/carol/"])
 
     def test_invalid_username_rejected(self) -> None:
-        page = FakePage()
         with self.assertRaises(ValueError):
-            _run(profile.fetch_profile(page, username="bad name!"))
+            _run(profile.fetch_profile(FakePage(), username="bad name!"))
 
-    def test_posts_from_embedded_web_profile(self) -> None:
+    def test_posts_exclude_reels_by_default(self) -> None:
         page = FakePage(
             responses=[
                 FakeResponse(
-                    _api("/api/v1/users/web_profile_info/"),
-                    _load("api_web_profile_info.json"),
+                    GRAPHQL_URL,
+                    _load("gql_profile_posts.json"),
+                    friendly="PolarisProfilePostsQuery",
                 )
             ]
         )
         with _no_sleep_patch():
             posts = _run(profile.fetch_posts(page, username="carol", limit=10))
-        self.assertEqual([p.id for p in posts], ["2001_500", "2002_500"])
-
-    def test_posts_fall_through_to_feed_user(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(
-                    _api("/api/v1/users/web_profile_info/"),
-                    _load("api_web_profile_info_empty_edges.json"),
-                ),
-                FakeResponse(
-                    _api("/api/v1/feed/user/"), _load("api_feed_user.json")
-                ),
-            ]
-        )
-        with _no_sleep_patch():
-            posts = _run(profile.fetch_posts(page, username="carol", limit=10))
-        # 3002 is a reel — dropped by default.
-        self.assertEqual([p.id for p in posts], ["3001_500"])
+        self.assertEqual([p.id for p in posts], ["2001_500"])
+        self.assertEqual(page.goto_calls, ["https://www.instagram.com/carol/"])
 
     def test_posts_include_reels(self) -> None:
         page = FakePage(
             responses=[
-                FakeResponse(_api("/api/v1/feed/user/"), _load("api_feed_user.json"))
+                FakeResponse(
+                    GRAPHQL_URL,
+                    _load("gql_profile_posts.json"),
+                    friendly="PolarisProfilePostsQuery",
+                )
             ]
         )
         with _no_sleep_patch():
@@ -197,27 +228,16 @@ class ProfileEndpointTests(unittest.TestCase):
                     page, username="carol", limit=10, include_reels=True
                 )
             )
-        self.assertEqual([p.id for p in posts], ["3001_500", "3002_500"])
-
-    def test_posts_dedupe_repeated_payloads(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(_api("/api/v1/feed/user/"), _load("api_feed_user.json")),
-                FakeResponse(_api("/api/v1/feed/user/"), _load("api_feed_user.json")),
-            ]
-        )
-        with _no_sleep_patch():
-            posts = _run(
-                profile.fetch_posts(
-                    page, username="carol", limit=10, include_reels=True
-                )
-            )
-        self.assertEqual(len(posts), 2)
+        self.assertEqual([p.id for p in posts], ["2001_500", "2002_500"])
 
     def test_fetch_reels(self) -> None:
         page = FakePage(
             responses=[
-                FakeResponse(_api("/api/v1/clips/user/"), _load("api_clips_user.json"))
+                FakeResponse(
+                    GRAPHQL_URL,
+                    _load("gql_reels.json"),
+                    friendly="PolarisProfileReelsTabContentQuery",
+                )
             ]
         )
         with _no_sleep_patch():
@@ -228,63 +248,30 @@ class ProfileEndpointTests(unittest.TestCase):
 
 class PostEndpointTests(unittest.TestCase):
     def test_fetch_by_shortcode(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(
-                    "https://www.instagram.com/graphql/query",
-                    _load("graphql_post_image.json"),
-                )
-            ]
-        )
+        page = FakePage(html=_text("post_page.html"))
         with _no_sleep_patch():
             result = _run(post.fetch(page, id_or_url="PI1"))
         assert result is not None
         self.assertEqual(result.id, "4001_500")
+        self.assertEqual(result.shortcode, "PI1")
         self.assertEqual(page.goto_calls, ["https://www.instagram.com/p/PI1/"])
 
     def test_fetch_by_url(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(
-                    "https://www.instagram.com/graphql/query",
-                    _load("graphql_post_carousel.json"),
-                )
-            ]
-        )
+        page = FakePage(html=_text("post_page.html"))
         with _no_sleep_patch():
             result = _run(
-                post.fetch(page, id_or_url="https://www.instagram.com/p/PCAR/")
+                post.fetch(page, id_or_url="https://www.instagram.com/reel/PI1/")
             )
         assert result is not None
-        self.assertEqual(result.shortcode, "PCAR")
-        self.assertEqual(page.goto_calls, ["https://www.instagram.com/p/PCAR/"])
-
-    def test_reel_url_resolves(self) -> None:
-        page = FakePage(
-            responses=[
-                FakeResponse(
-                    "https://www.instagram.com/graphql/query",
-                    _load("graphql_post_video.json"),
-                )
-            ]
-        )
-        with _no_sleep_patch():
-            result = _run(
-                post.fetch(page, id_or_url="https://www.instagram.com/reel/PVID/")
-            )
-        assert result is not None
-        self.assertEqual(page.goto_calls, ["https://www.instagram.com/p/PVID/"])
+        self.assertEqual(page.goto_calls, ["https://www.instagram.com/p/PI1/"])
 
     def test_invalid_input_raises(self) -> None:
-        page = FakePage()
         with self.assertRaises(ValueError):
-            _run(post.fetch(page, id_or_url="bad shortcode!"))
+            _run(post.fetch(FakePage(), id_or_url="bad shortcode!"))
 
-    def test_returns_none_on_missing_payload(self) -> None:
-        page = FakePage(responses=[])
-        with _no_sleep_patch(), mock.patch.object(
-            scraper_mod, "SINGLE_FETCH_TIMEOUT_S", 0.05
-        ):
+    def test_returns_none_when_not_embedded(self) -> None:
+        page = FakePage(html="<html><body>no data</body></html>")
+        with _no_sleep_patch():
             result = _run(post.fetch(page, id_or_url="PI1"))
         self.assertIsNone(result)
 
@@ -294,7 +281,8 @@ class SavedEndpointTests(unittest.TestCase):
         page = FakePage(
             responses=[
                 FakeResponse(
-                    _api("/api/v1/feed/saved/posts/"), _load("api_feed_saved.json")
+                    "https://i.instagram.com/api/v1/feed/saved/posts/?count=12",
+                    _load("api_feed_saved.json"),
                 )
             ]
         )
@@ -309,7 +297,7 @@ class SavedEndpointTests(unittest.TestCase):
         page = FakePage(
             responses=[
                 FakeResponse(
-                    _api("/api/v1/feed/collection/"),
+                    "https://i.instagram.com/api/v1/feed/collection/17900000000000001/posts/",
                     _load("api_feed_collection.json"),
                 )
             ]
@@ -323,15 +311,19 @@ class SavedEndpointTests(unittest.TestCase):
         self.assertEqual([p.id for p in posts], ["7001_80", "7002_81"])
         self.assertEqual(
             page.goto_calls,
-            ["https://www.instagram.com/carol/saved/17900000000000001/"],
+            [
+                "https://www.instagram.com/carol/saved/"
+                "17900000000000001/17900000000000001/"
+            ],
         )
 
     def test_fetch_collections(self) -> None:
         page = FakePage(
             responses=[
                 FakeResponse(
-                    _api("/api/v1/collections/list/"),
-                    _load("api_collections_list.json"),
+                    GRAPHQL_URL,
+                    _load("gql_collections.json"),
+                    friendly="PolarisProfileSavedTabContentQuery",
                 )
             ]
         )

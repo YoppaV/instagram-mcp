@@ -8,9 +8,9 @@ from ..models import Post, Profile, Reel
 from ..parsers import extract_profile, extract_profile_posts, extract_reels
 from ..scraper import intercept_single_response, scroll_collect
 from ._ids import (
-    FR_CLIPS,
-    FR_USER_FEED,
-    FR_WEB_PROFILE,
+    FN_PROFILE,
+    FN_PROFILE_POSTS,
+    FN_REELS,
     normalize_username,
     profile_url,
     reels_url,
@@ -29,7 +29,7 @@ async def fetch_profile(page: "Page", *, username: str) -> Profile | None:
     result = await intercept_single_response(
         page,
         profile_url(handle),
-        FR_WEB_PROFILE,
+        FN_PROFILE,
         extract_profile,
     )
     return result if isinstance(result, Profile) else None
@@ -44,26 +44,26 @@ async def fetch_posts(
 ) -> list[Post]:
     """Scroll a profile's grid.
 
-    Posts come from two sources on the same page: the first ~12 are embedded
-    in the ``web_profile_info`` response, the rest from the ``feed/user``
-    pagination endpoint — both fragments are intercepted and merged (deduped
-    by ``Post.id``). Reels are excluded unless ``include_reels`` is set.
+    The grid mixes regular posts and reels; reels are excluded unless
+    ``include_reels`` is set. Excluded reels are scrolled past, so ``limit``
+    still yields that many actual posts.
     """
     handle = normalize_username(username)
-    posts = await scroll_collect(
+    keep = None if include_reels else _is_not_reel
+    return await scroll_collect(
         page,
         profile_url(handle),
-        (FR_WEB_PROFILE, FR_USER_FEED),
+        FN_PROFILE_POSTS,
         extract_profile_posts,
         limit=limit,
         max_scrolls=scroll_budget(limit),
         key_of=lambda post: post.id,
+        keep=keep,
     )
-    if not include_reels:
-        posts = [p for p in posts if p.product_type != CLIPS_PRODUCT_TYPE]
-    if limit is not None:
-        posts = posts[:limit]
-    return posts
+
+
+def _is_not_reel(post: Post) -> bool:
+    return post.product_type != CLIPS_PRODUCT_TYPE
 
 
 async def fetch_reels(
@@ -77,7 +77,7 @@ async def fetch_reels(
     return await scroll_collect(
         page,
         reels_url(handle),
-        FR_CLIPS,
+        FN_REELS,
         extract_reels,
         limit=limit,
         max_scrolls=scroll_budget(limit),
