@@ -1,0 +1,58 @@
+{
+  "items": [
+    {
+      "media": {
+        "pk": "7001",
+        "id": "7001_80",
+        "code": "CL1",
+        "media_type": 1,
+        "taken_at": 1699930000,
+        "product_type": "feed",
+        "caption": {"text": "collection one"},
+        "like_count": 8,
+        "comment_count": 1,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/7001.jpg", "width": 1080, "height": 1080}
+          ]
+        },
+        "user": {
+          "pk": "80",
+          "username": "frank",
+          "full_name": "Frank",
+          "is_verified": false,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/frank.jpg"
+        }
+      }
+    },
+    {
+      "media": {
+        "pk": "7002",
+        "id": "7002_81",
+        "code": "CL2",
+        "media_type": 1,
+        "taken_at": 1699931000,
+        "product_type": "feed",
+        "caption": {"text": "collection two"},
+        "like_count": 4,
+        "comment_count": 0,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/7002.jpg", "width": 1080, "height": 1080}
+          ]
+        },
+        "user": {
+          "pk": "81",
+          "username": "grace",
+          "full_name": "Grace",
+          "is_verified": false,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/grace.jpg"
+        }
+      }
+    }
+  ],
+  "next_max_id": "NEXTMAX_COLL",
+  "more_available": true
+}

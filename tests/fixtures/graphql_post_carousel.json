@@ -1,0 +1,45 @@
+{
+  "data": {
+    "xdt_shortcode_media": {
+      "__typename": "XDTGraphSidecar",
+      "id": "4002",
+      "shortcode": "PCAR",
+      "display_url": "https://cdn.example.com/4002.jpg",
+      "is_video": false,
+      "dimensions": {"width": 1080, "height": 1080},
+      "edge_media_to_caption": {"edges": [{"node": {"text": "a carousel"}}]},
+      "edge_media_preview_like": {"count": 150},
+      "edge_media_to_parent_comment": {"count": 9},
+      "taken_at_timestamp": 1699970000,
+      "owner": {
+        "id": "500",
+        "username": "carol",
+        "full_name": "Carol Doe",
+        "is_verified": true,
+        "is_private": false,
+        "profile_pic_url": "https://cdn.example.com/carol.jpg"
+      },
+      "edge_sidecar_to_children": {
+        "edges": [
+          {
+            "node": {
+              "__typename": "XDTGraphImage",
+              "display_url": "https://cdn.example.com/4002a.jpg",
+              "is_video": false,
+              "dimensions": {"width": 1080, "height": 1080}
+            }
+          },
+          {
+            "node": {
+              "__typename": "XDTGraphVideo",
+              "display_url": "https://cdn.example.com/4002b.jpg",
+              "is_video": true,
+              "video_url": "https://cdn.example.com/4002b.mp4",
+              "dimensions": {"width": 720, "height": 1280}
+            }
+          }
+        ]
+      }
+    }
+  }
+}

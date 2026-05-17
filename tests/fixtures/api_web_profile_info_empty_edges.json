@@ -1,0 +1,24 @@
+{
+  "data": {
+    "user": {
+      "id": "500",
+      "username": "carol",
+      "full_name": "Carol Doe",
+      "biography": "photographer in madrid",
+      "external_url": "https://carol.example.com",
+      "bio_links": [{"title": "site", "url": "https://carol.example.com"}],
+      "is_private": false,
+      "is_verified": true,
+      "is_business_account": false,
+      "profile_pic_url": "https://cdn.example.com/carol.jpg",
+      "profile_pic_url_hd": "https://cdn.example.com/carol_hd.jpg",
+      "edge_followed_by": {"count": 4200},
+      "edge_follow": {"count": 311},
+      "edge_owner_to_timeline_media": {
+        "count": 87,
+        "page_info": {"has_next_page": true, "end_cursor": "CURSOR1"},
+        "edges": []
+      }
+    }
+  }
+}

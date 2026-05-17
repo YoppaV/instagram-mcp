@@ -1,0 +1,26 @@
+{
+  "data": {
+    "xdt_shortcode_media": {
+      "__typename": "XDTGraphImage",
+      "id": "4001",
+      "shortcode": "PI1",
+      "display_url": "https://cdn.example.com/4001.jpg",
+      "is_video": false,
+      "dimensions": {"width": 1080, "height": 1080},
+      "edge_media_to_caption": {"edges": [{"node": {"text": "single image"}}]},
+      "edge_media_preview_like": {"count": 99},
+      "edge_media_to_parent_comment": {"count": 4},
+      "taken_at_timestamp": 1699980000,
+      "product_type": "feed",
+      "location": {"name": "Madrid"},
+      "owner": {
+        "id": "500",
+        "username": "carol",
+        "full_name": "Carol Doe",
+        "is_verified": true,
+        "is_private": false,
+        "profile_pic_url": "https://cdn.example.com/carol.jpg"
+      }
+    }
+  }
+}

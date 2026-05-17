@@ -1,0 +1,26 @@
+{
+  "data": {
+    "xdt_shortcode_media": {
+      "__typename": "XDTGraphVideo",
+      "id": "4003",
+      "shortcode": "PVID",
+      "display_url": "https://cdn.example.com/4003.jpg",
+      "is_video": true,
+      "video_url": "https://cdn.example.com/4003.mp4",
+      "dimensions": {"width": 720, "height": 1280},
+      "edge_media_to_caption": {"edges": [{"node": {"text": "a video"}}]},
+      "edge_media_preview_like": {"count": 75},
+      "edge_media_to_parent_comment": {"count": 2},
+      "video_view_count": 1234,
+      "taken_at_timestamp": 1699960000,
+      "owner": {
+        "id": "500",
+        "username": "carol",
+        "full_name": "Carol Doe",
+        "is_verified": true,
+        "is_private": false,
+        "profile_pic_url": "https://cdn.example.com/carol.jpg"
+      }
+    }
+  }
+}

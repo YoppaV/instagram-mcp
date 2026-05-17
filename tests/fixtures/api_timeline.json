@@ -1,0 +1,90 @@
+{
+  "feed_items": [
+    {
+      "media_or_ad": {
+        "pk": "1001",
+        "id": "1001_10",
+        "code": "AAA1",
+        "media_type": 1,
+        "taken_at": 1700000000,
+        "product_type": "feed",
+        "caption": {"text": "Post one"},
+        "like_count": 10,
+        "comment_count": 2,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/1001_big.jpg", "width": 1080, "height": 1080},
+            {"url": "https://cdn.example.com/1001_small.jpg", "width": 320, "height": 320}
+          ]
+        },
+        "user": {
+          "pk": "10",
+          "username": "alice",
+          "full_name": "Alice",
+          "is_verified": false,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/alice.jpg"
+        }
+      }
+    },
+    {
+      "media_or_ad": {
+        "pk": "1002",
+        "id": "1002_20",
+        "code": "AAA2",
+        "media_type": 2,
+        "taken_at": 1700000100,
+        "product_type": "feed",
+        "caption": {"text": "Video post"},
+        "like_count": 5,
+        "comment_count": 1,
+        "view_count": 500,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/1002_thumb.jpg", "width": 720, "height": 1280}
+          ]
+        },
+        "video_versions": [
+          {"url": "https://cdn.example.com/1002.mp4", "width": 720, "height": 1280, "type": 101}
+        ],
+        "user": {
+          "pk": "20",
+          "username": "bob",
+          "full_name": "Bob",
+          "is_verified": true,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/bob.jpg"
+        }
+      }
+    },
+    {
+      "media_or_ad": {
+        "pk": "9999",
+        "id": "9999_30",
+        "code": "AD001",
+        "media_type": 1,
+        "injected": {"label": "Sponsored", "tracking_token": "xyz"},
+        "caption": {"text": "Buy now"},
+        "like_count": 0,
+        "comment_count": 0,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/ad.jpg", "width": 1080, "height": 1080}
+          ]
+        },
+        "user": {
+          "pk": "30",
+          "username": "brandco",
+          "full_name": "Brand Co",
+          "is_verified": true,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/brand.jpg"
+        }
+      }
+    },
+    {"end_of_feed_demarcator": {"group_set": {"groups": []}}}
+  ],
+  "next_max_id": "NEXTMAX_TL",
+  "more_available": true,
+  "num_results": 2
+}
