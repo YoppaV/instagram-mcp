@@ -126,8 +126,21 @@ ranges, lower limits) and consider running headed (`BROWSER_HEADLESS=false`).
 
 ## Connecting Claude clients
 
-**Claude Code**: `.mcp.json` is committed at the repo root. Open Claude Code in
-this directory and the `instagram` server is auto-discovered.
+**Claude Code**: registered as a **user-scoped** MCP server so it works in
+every project, not only this directory. Register/refresh it with:
+
+```bash
+claude mcp add instagram --scope user \
+  --env PYTHONPATH=/home/juanr/projects/Instagram-mcp/src \
+  --env INSTAGRAM_SESSION_FILE=/home/juanr/projects/Instagram-mcp/sessions/<handle>_instagram_state.json \
+  --env BROWSER_HEADLESS=true \
+  --env BROWSER_IDLE_TIMEOUT_S=180 \
+  -- /home/juanr/projects/Instagram-mcp/venv/bin/python -m instagram_sdk.server
+```
+
+`claude mcp get instagram` should report `Scope: User config`. There is
+deliberately no project-scoped `.mcp.json` — one user-scoped registration
+avoids a second, shadowing entry.
 
 **Claude Desktop**: add to the `mcpServers` block of `claude_desktop_config.json`:
 

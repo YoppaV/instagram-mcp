@@ -67,8 +67,19 @@ venv/bin/python -m mcp dev instagram_sdk.server
 
 ## Connect Claude
 
-**Claude Code** — `.mcp.json` is committed at the repo root; open Claude Code
-in this directory and the `instagram` server is auto-discovered.
+**Claude Code** — register it once as a user-scoped server so it is available
+in every project (not just this directory):
+
+```bash
+claude mcp add instagram --scope user \
+  --env PYTHONPATH=/home/juanr/projects/Instagram-mcp/src \
+  --env INSTAGRAM_SESSION_FILE=/home/juanr/projects/Instagram-mcp/sessions/<handle>_instagram_state.json \
+  --env BROWSER_HEADLESS=true \
+  --env BROWSER_IDLE_TIMEOUT_S=180 \
+  -- /home/juanr/projects/Instagram-mcp/venv/bin/python -m instagram_sdk.server
+```
+
+Check it with `claude mcp get instagram` (Scope should read "User config").
 
 **Claude Desktop** — add to `claude_desktop_config.json`:
 
