@@ -22,7 +22,14 @@ BASE = "https://www.instagram.com"
 FN_TIMELINE = "PolarisFeedRootPaginationCachedQuery_subscribe"
 FN_PROFILE = "PolarisProfilePageContentQuery"
 FN_PROFILE_POSTS = "PolarisProfilePostsQuery"
-FN_REELS = "PolarisProfileReelsTabContentQuery"
+# The Reels tab fires two different friendly names: the first batch (~12
+# items) comes from PolarisProfileReelsTabContentQuery on initial render,
+# then each scroll-driven page is PolarisProfileReelsTabContentQuery_connection.
+# Both share the same response shape (xdt_api__v1__clips__user__connection_v2).
+FN_REELS: tuple[str, ...] = (
+    "PolarisProfileReelsTabContentQuery",
+    "PolarisProfileReelsTabContentQuery_connection",
+)
 FN_COLLECTIONS = "PolarisProfileSavedTabContentQuery"
 
 # REST feeds — matched against a substring of the response URL.
