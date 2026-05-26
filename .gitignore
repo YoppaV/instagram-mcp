@@ -1,0 +1,36 @@
+# Credentials
+.env
+.env.*
+!.env.example
+
+# Virtual environment
+venv/
+.venv/
+
+# Playwright storage_state files (cookies — sensitive)
+sessions/
+*_state.json
+cookies*.json
+storage_state.json
+
+# Downloaded content and derived data
+data/
+
+# Claude Code agent config (project-local; not part of the public surface)
+.claude/
+CLAUDE.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+src/*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+*.swp

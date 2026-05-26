@@ -1,0 +1,71 @@
+{
+  "items": [
+    {
+      "media": {
+        "pk": "6001",
+        "id": "6001_70",
+        "code": "SV1",
+        "media_type": 1,
+        "taken_at": 1699940000,
+        "product_type": "feed",
+        "caption": {"text": "saved one"},
+        "like_count": 3,
+        "comment_count": 0,
+        "image_versions2": {
+          "candidates": [
+            {"url": "https://cdn.example.com/6001.jpg", "width": 1080, "height": 1080}
+          ]
+        },
+        "user": {
+          "pk": "70",
+          "username": "dave",
+          "full_name": "Dave",
+          "is_verified": false,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/dave.jpg"
+        }
+      }
+    },
+    {
+      "media": {
+        "pk": "6002",
+        "id": "6002_71",
+        "code": "SV2",
+        "media_type": 8,
+        "taken_at": 1699941000,
+        "product_type": "carousel_container",
+        "caption": {"text": "saved carousel"},
+        "like_count": 20,
+        "comment_count": 2,
+        "carousel_media": [
+          {
+            "media_type": 1,
+            "image_versions2": {
+              "candidates": [
+                {"url": "https://cdn.example.com/6002a.jpg", "width": 1080, "height": 1080}
+              ]
+            }
+          },
+          {
+            "media_type": 1,
+            "image_versions2": {
+              "candidates": [
+                {"url": "https://cdn.example.com/6002b.jpg", "width": 1080, "height": 1080}
+              ]
+            }
+          }
+        ],
+        "user": {
+          "pk": "71",
+          "username": "erin",
+          "full_name": "Erin",
+          "is_verified": true,
+          "is_private": false,
+          "profile_pic_url": "https://cdn.example.com/erin.jpg"
+        }
+      }
+    }
+  ],
+  "next_max_id": "NEXTMAX_SAVED",
+  "more_available": true
+}

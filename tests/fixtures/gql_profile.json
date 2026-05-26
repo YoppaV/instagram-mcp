@@ -1,0 +1,25 @@
+{
+  "data": {
+    "user": {
+      "pk": "500",
+      "username": "carol",
+      "full_name": "Carol Doe",
+      "biography": "photographer in madrid",
+      "external_url": "https://carol.example.com",
+      "bio_links": [
+        {"url": "https://carol.example.com", "lynx_url": "https://l.instagram.com/?u=site"},
+        {"lynx_url": "https://l.instagram.com/?u=shop"}
+      ],
+      "is_private": false,
+      "is_verified": true,
+      "is_business": false,
+      "follower_count": 4200,
+      "following_count": 311,
+      "media_count": 87,
+      "category": "Photographer",
+      "profile_pic_url": "https://cdn.example.com/carol.jpg",
+      "hd_profile_pic_url_info": {"url": "https://cdn.example.com/carol_hd.jpg"}
+    },
+    "viewer": {"user": {"pk": "999"}}
+  }
+}

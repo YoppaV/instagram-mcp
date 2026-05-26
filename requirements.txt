@@ -1,0 +1,10 @@
+# Pinned runtime dependencies for the Instagram MCP server.
+# Install into the project venv with:
+#   uv pip install --python venv/bin/python -r requirements.txt
+# Then download the browser binary:
+#   venv/bin/python -m playwright install chromium
+httpx==0.28.1
+mcp[cli]==1.27.1
+playwright==1.59.0
+python-dotenv==1.2.2
+rich==15.0.0
