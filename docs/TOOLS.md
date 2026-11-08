@@ -4,6 +4,8 @@ Referencia exhaustiva de las **9 tools** que expone `server.py` (8 read-only +
 `download_media`). Todas devuelven JSON (dataclasses → dict); `download_media`
 además devuelve objetos `Image` inline. Router y arquitectura en `../AGENTS.md`.
 
+Todo `limit` tiene un tope de 50: un valor mayor se recorta, no da error.
+
 | Tool | Parámetros | Reconocido por |
 |------|-----------|----------------|
 | `auth_status` | — | sin red; lee el fichero de sesión |
@@ -23,11 +25,14 @@ además devuelve objetos `Image` inline. Router y arquitectura en `../AGENTS.md`
   del CDN de Instagram son firmadas y efímeras. Si devuelve `skipped` con `no_url`,
   esa media ya no tiene URL válida. Los vídeos sólo bajan con `download_videos=True`.
 - Las constantes `FN_*` / `FR_*` / `EMBED_POST_KEY` viven en `endpoints/_ids.py`
-  (único punto a parchear ante rotación — ver `../.claude/rules/endpoints.md`).
+  (único punto a parchear ante rotación — ver [README](../README.md#maintenance--when-instagram-rotates-endpoints)).
 
-## Debugging (resumen; detalle en `../.claude/rules/endpoints.md`)
-- Tool devuelve `[]` → friendly-name de GraphQL rotado; DevTools → Network →
+## Debugging (resumen; detalle en el [README](../README.md#troubleshooting))
+- `get_saved_posts` devuelve `[]` tras ~30 s → `--username` no era el de la cuenta;
+  repetir el login con el usuario exacto.
+- Otra tool devuelve `[]` → friendly-name de GraphQL rotado; DevTools → Network →
   `fb_api_req_friendly_name` → parchear `FN_*`/`FR_*` → fixture anonimizada.
 - `SessionExpiredError` → re-login (`python -m scripts.auth_login`); fichero debe
   llamarse `<handle>_instagram_state.json`.
-- Chromium no arranca (WSL2/Linux) → `sudo venv/bin/python -m playwright install-deps chromium`.
+- Chromium no arranca (WSL2/Linux) → `sudo venv/bin/python -m playwright install-deps chromium`;
+  en Windows, repetir `venv\Scripts\python -m playwright install chromium`.
