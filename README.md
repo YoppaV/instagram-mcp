@@ -34,28 +34,31 @@ CDN over HTTP.
 
 Tools return plain JSON (dataclasses serialized to dicts). `download_media`
 additionally returns inline `Image` objects for any image bytes it fetched.
+Every `limit` is capped at 50: a larger value is clamped, not rejected.
 
 ## Requirements
 
 - Python 3.10 – 3.12
 - A real Instagram account (you'll log in manually once)
-- ~500 MB free disk for Chromium
+- ~800 MB free disk, mostly Chromium
 - CPU only — no GPU is used
+- macOS, Linux, WSL2 or native Windows ([Windows steps](#windows-powershell))
 
 ## Setup
 
 The setup snippet uses [uv](https://docs.astral.sh/uv/) for the venv and
 installs. If you don't have it: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 (or substitute the equivalent `python -m venv venv` + `venv/bin/pip install`
-commands).
+commands). On Windows, follow [Windows (PowerShell)](#windows-powershell)
+instead: `venv/bin` doesn't exist there.
 
 ```bash
 # 1. Create the virtualenv and install dependencies
 uv venv venv --python 3.12
-uv pip install --python venv/bin/python -r requirements.txt
+uv pip install --python venv -r requirements.txt
 
 # 2. Install the package itself (editable — picks up local edits)
-uv pip install --python venv/bin/python -e .
+uv pip install --python venv -e .
 
 # 3. Download the Chromium binary Playwright drives
 venv/bin/python -m playwright install chromium
@@ -65,6 +68,39 @@ venv/bin/python -m playwright install chromium
 # 4. Configure your handle
 cp .env.example .env       # then set INSTAGRAM_USERNAME=yourhandle
 ```
+
+### Windows (PowerShell)
+
+Native Windows needs no WSL. uv fetches Python 3.12 by itself; you only need
+Git and Claude Code. Every command runs from a normal PowerShell window, and
+activating the venv is not needed, so the script execution policy doesn't
+matter.
+
+```powershell
+# uv, if you don't have it. Open a new PowerShell window afterwards.
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+git clone https://github.com/YoppaV/instagram-mcp.git
+cd instagram-mcp
+uv venv venv --python 3.12
+uv pip install --python venv -r requirements.txt
+uv pip install --python venv -e .
+venv\Scripts\python -m playwright install chromium
+
+# Optional: check the install (no network, no browser)
+venv\Scripts\python -m unittest discover tests
+
+# Log in. A Chromium window opens; the password and 2FA are yours to type.
+venv\Scripts\python -m scripts.auth_login --username yourhandle
+
+# Register with Claude Code (from the repo folder, so the path is absolute)
+claude mcp add instagram --scope user -- "$PWD\venv\Scripts\instagram-mcp.exe"
+claude mcp list
+```
+
+The session file goes to `%USERPROFILE%\.instagram-mcp\sessions\`. For Claude
+Desktop, use the full path to `venv\Scripts\instagram-mcp.exe` as `command`,
+with backslashes doubled in the JSON.
 
 ## Authenticate (one-time, interactive)
 
@@ -77,8 +113,14 @@ A Chromium window opens on the Instagram login page. Log in manually
 the session cookies appear, the storage state is saved to
 `~/.instagram-mcp/sessions/<handle>_instagram_state.json` (override the
 directory via `INSTAGRAM_SESSION_DIR`). The MCP server reads that file on
-every call; re-run this command when the session expires (typically every
+every call, so logging in after registering the server works without
+restarting it. Re-run this command when the session expires (typically every
 few weeks).
+
+`--username` must be your Instagram username, not your login email. An email
+or malformed value is refused before the browser opens; if the account that
+logs in turns out to be a different one, the file is named after the real
+account and you get a warning.
 
 The session file contains a logged-in cookie for your account — treat it
 like a password. It is `.gitignore`d and lives outside the repo by default.
@@ -212,7 +254,8 @@ share one matcher:
 ## Maintenance — when Instagram rotates endpoints
 
 Instagram rotates the GraphQL friendly names every few weeks. If a tool
-starts returning `[]`:
+starts returning `[]` (and it isn't the wrong-username case from
+[Troubleshooting](#troubleshooting)):
 
 1. Open the relevant page in a browser with DevTools → Network tab open:
    - home feed → scroll `https://www.instagram.com/`
@@ -253,7 +296,7 @@ helper and re-run the fixture tests.
 ## Tests
 
 ```bash
-venv/bin/python -m unittest discover tests -v
+venv/bin/python -m unittest discover tests -v      # Windows: venv\Scripts\python
 ```
 
 Stdlib `unittest`, fixture-driven, no network or real browser. There is one
@@ -265,10 +308,17 @@ site; it self-skips unless `RUN_LIVE_TESTS=1`.
 - **`SessionExpiredError`** — the session expired or the file is misnamed.
   Re-run `scripts.auth_login`; the file must be
   `<handle>_instagram_state.json`.
-- **A tool returns `[]`** — Instagram likely rotated an endpoint. See
+- **`get_saved_posts` returns `[]` after ~30 s** — the session file is named
+  after the wrong account, usually from an old login. Log in again with your
+  exact username and delete the wrongly named file from the sessions folder.
+- **A tool returns `[]`** (with the right username) — Instagram likely rotated
+  an endpoint. See
   [Maintenance — when Instagram rotates endpoints](#maintenance--when-instagram-rotates-endpoints).
-- **Chromium won't launch** — install system libraries with
-  `sudo venv/bin/python -m playwright install-deps chromium`.
+- **Chromium won't launch** — on Linux/WSL2, install system libraries with
+  `sudo venv/bin/python -m playwright install-deps chromium`. On Windows,
+  repeat `venv\Scripts\python -m playwright install chromium`.
+- **`uv` is not recognized (Windows)** — open a new PowerShell window after
+  installing it.
 
 ## Out of scope
 

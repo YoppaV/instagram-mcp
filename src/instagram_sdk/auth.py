@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from playwright.sync_api import BrowserContext
+    from playwright.sync_api import BrowserContext, Page
 
 BASE = "https://www.instagram.com"
 INSTAGRAM_ORIGIN = "https://www.instagram.com"
@@ -31,18 +33,80 @@ DEFAULT_LOGIN_TIMEOUT_S = 600
 LOGIN_POLL_INTERVAL_S = 1.5
 
 VIEWPORT = {"width": 1280, "height": 900}
-# Locale and timezone reported to instagram.com. Defaults are neutral; override
-# with BROWSER_LOCALE / BROWSER_TIMEZONE_ID to match the account's real region —
-# a fingerprint that aligns with the account history is harder to flag than
-# one that doesn't.
-LOCALE = os.getenv("BROWSER_LOCALE", "en-US").strip() or "en-US"
-TIMEZONE_ID = os.getenv("BROWSER_TIMEZONE_ID", "Etc/UTC").strip() or "Etc/UTC"
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-)
+DEFAULT_LOCALE = "en-US"
+DEFAULT_TIMEZONE_ID = "Etc/UTC"
+
+_USER_AGENT_PLATFORMS = {
+    "Windows": "Windows NT 10.0; Win64; x64",
+    "Darwin": "Macintosh; Intel Mac OS X 10_15_7",
+    "Linux": "X11; Linux x86_64",
+}
 
 _SESSION_SUFFIX = "_instagram_state"
+_HANDLE_RE = re.compile(r"[A-Za-z0-9._]{1,30}")
+
+
+def browser_locale() -> str:
+    """Locale reported to instagram.com (``BROWSER_LOCALE``).
+
+    Read at call time, not import time, so a value that comes from ``.env`` is
+    honoured regardless of when ``load_dotenv`` ran. Align it with the
+    account's real region: a fingerprint that matches the account history is
+    harder to flag.
+    """
+    return os.getenv("BROWSER_LOCALE", "").strip() or DEFAULT_LOCALE
+
+
+def browser_timezone_id() -> str:
+    """Timezone reported to instagram.com (``BROWSER_TIMEZONE_ID``)."""
+    return os.getenv("BROWSER_TIMEZONE_ID", "").strip() or DEFAULT_TIMEZONE_ID
+
+
+def build_user_agent(browser_version: str, system: str | None = None) -> str:
+    """User agent for the Chromium actually running on this OS.
+
+    Headless Chromium advertises itself as ``HeadlessChrome``, so the default
+    can't be kept; the override is derived from the real browser version and
+    host OS so it stays truthful everywhere.
+    """
+    major = browser_version.split(".", 1)[0]
+    token = _USER_AGENT_PLATFORMS.get(
+        system or platform.system(), _USER_AGENT_PLATFORMS["Linux"]
+    )
+    return (
+        f"Mozilla/5.0 ({token}) AppleWebKit/537.36 "
+        f"(KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
+    )
+
+
+def browser_context_options(browser_version: str) -> dict[str, object]:
+    """Keyword arguments for ``browser.new_context``, shared by login and tools."""
+    return {
+        "viewport": VIEWPORT,
+        "user_agent": build_user_agent(browser_version),
+        "locale": browser_locale(),
+        "timezone_id": browser_timezone_id(),
+    }
+
+
+def validate_handle(raw: str) -> str:
+    """Return a clean Instagram handle, or raise ``ValueError``.
+
+    The handle names the session file and the ``/<handle>/saved/`` URL, so an
+    email or a malformed value would only surface later as an empty result.
+    """
+    handle = raw.strip().lstrip("@")
+    if "@" in handle:
+        raise ValueError(
+            f"{raw!r} looks like an email. Use your Instagram username "
+            "(the name in your profile URL), not your login email."
+        )
+    if not _HANDLE_RE.fullmatch(handle):
+        raise ValueError(
+            f"{raw!r} is not a valid Instagram username "
+            "(1-30 letters, digits, dots or underscores)."
+        )
+    return handle
 
 
 class SessionExpiredError(RuntimeError):
@@ -123,6 +187,41 @@ def wait_for_instagram_login(
         f"Timed out after {timeout_s}s waiting for Instagram login. "
         f"Missing cookies: {missing}"
     )
+
+
+# Same app id the instagram.com web client sends with its own REST calls.
+_WEB_APP_ID = "936619743392459"
+_VIEWER_LOOKUP_JS = """
+async ([userId, appId]) => {
+  const response = await fetch(`/api/v1/users/${userId}/info/`, {
+    headers: {"X-IG-App-ID": appId},
+    credentials: "include",
+  });
+  if (!response.ok) return null;
+  const body = await response.json();
+  return body && body.user ? body.user.username : null;
+}
+"""
+
+
+def fetch_logged_in_username(page: "Page", user_id: str) -> str | None:
+    """Ask the logged-in page who it is. ``None`` if that can't be determined.
+
+    Only used at login, once, to catch a ``--username`` that is not the
+    account's. Best-effort: a failed lookup must never lose a finished login.
+    """
+    try:
+        username = page.evaluate(_VIEWER_LOOKUP_JS, [user_id, _WEB_APP_ID])
+    except Exception:
+        return None
+    return username if isinstance(username, str) and username else None
+
+
+def resolve_session_handle(requested: str, real_username: str | None) -> str:
+    """The handle to save under: the account's real one whenever it is known."""
+    if real_username and real_username.lower() != requested.lower():
+        return real_username
+    return requested
 
 
 def save_storage_state(context: "BrowserContext", path: Path) -> None:

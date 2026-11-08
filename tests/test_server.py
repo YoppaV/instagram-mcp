@@ -124,16 +124,19 @@ def _patch_browser() -> "mock._patch":
 
 def _patch_session(name: str = "carol_instagram_state.json") -> "mock._patch":
     return mock.patch.object(
-        server_mod, "_session_path", Path("sessions") / name
+        server_mod, "_resolve_session_path", return_value=Path("sessions") / name
     )
 
 
 class AuthStatusToolTests(unittest.TestCase):
     def test_reports_session_summary(self) -> None:
-        with mock.patch.object(server_mod, "_session_path", Path("/nope")):
+        missing = Path("/nope")
+        with mock.patch.object(
+            server_mod, "_resolve_session_path", return_value=missing
+        ):
             result = _run(server_mod.auth_status())
         self.assertFalse(result["authenticated"])
-        self.assertEqual(result["session_path"], "/nope")
+        self.assertEqual(result["session_path"], str(missing))
 
 
 class ResolveOwnHandleTests(unittest.TestCase):

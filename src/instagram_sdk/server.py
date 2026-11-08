@@ -12,7 +12,7 @@ or — for backward compatibility — the legacy in-repo ``sessions/`` folder.
 
 All tools are read-only. Instagram detects automation aggressively, so calls
 are serialized through one browser and paced with randomized pauses — keep
-``limit`` values modest.
+``limit`` values modest; every ``limit`` is capped at ``MAX_LIMIT``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from mcp.server.fastmcp import FastMCP, Image
 # ``__package__``, which breaks relative imports.
 from instagram_sdk import downloader
 from instagram_sdk.auth import (
-    USER_AGENT,
     SessionExpiredError,
     handle_from_session_path,
     session_summary,
@@ -54,6 +53,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _XDG_SESSION_DIR = Path.home() / ".instagram-mcp" / "sessions"
 _LEGACY_SESSION_DIR = _PROJECT_ROOT / "sessions"
 _SESSION_SUFFIX = "_instagram_state"
+# Hard cap on every ``limit``: more posts means more scrolling on the account.
+MAX_LIMIT = 50
 
 
 def _candidate_session_dirs() -> list[Path]:
@@ -129,9 +130,10 @@ def _headless() -> bool:
     return raw not in ("0", "false", "no")
 
 
-_session_path = _resolve_session_path()
+# Passed as a callable: the file is looked up on every tool call, so logging in
+# after the server was registered works without restarting it.
 _browser = BrowserSession(
-    _session_path,
+    _resolve_session_path,
     idle_timeout_s=_idle_timeout(),
     headless=_headless(),
 )
@@ -143,14 +145,20 @@ def _resolve_own_handle() -> str:
     Saved posts and collections are private, so those tools must navigate
     under ``/<handle>/saved/...`` — and ``<handle>`` is whoever logged in.
     """
-    stem = _session_path.stem
+    session_path = _resolve_session_path()
+    stem = session_path.stem
     if not stem.endswith(_SESSION_SUFFIX) or len(stem) <= len(_SESSION_SUFFIX):
         raise SessionExpiredError(
             f"Cannot determine your Instagram handle from session file "
-            f"{_session_path.name!r}. Name it '<handle>_instagram_state.json' "
+            f"{session_path.name!r}. Name it '<handle>_instagram_state.json' "
             "— re-run: python -m scripts.auth_login"
         )
-    return handle_from_session_path(_session_path)
+    return handle_from_session_path(session_path)
+
+
+def _clamp_limit(limit: int) -> int:
+    """Keep a tool's ``limit`` between 1 and ``MAX_LIMIT``."""
+    return max(1, min(limit, MAX_LIMIT))
 
 
 def _serialize(value: Any) -> Any:
@@ -174,10 +182,11 @@ def _get_http_client() -> httpx.AsyncClient:
     """
     global _http_client
     if _http_client is None:
+        user_agent = getattr(_browser, "user_agent", None)
         _http_client = httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": USER_AGENT},
+            headers={"User-Agent": user_agent} if user_agent else None,
         )
     return _http_client
 
@@ -209,7 +218,7 @@ async def auth_status() -> dict[str, Any]:
     This does NOT make a network request — to verify the session actually
     works, call any other tool. Session-expired errors there point back here.
     """
-    return session_summary(_session_path)
+    return session_summary(_resolve_session_path())
 
 
 @mcp.tool()
@@ -222,12 +231,15 @@ async def get_saved_posts(
     Args:
         collection_id: Restrict to one save-collection (its id, from
             `get_saved_collections`). Omit for the full "All Posts" bucket.
-        limit: Max posts to return (default 24). Keep this modest.
+        limit: Max posts to return (default 24, capped at 50). Keep this modest.
     """
     handle = _resolve_own_handle()
     async with _browser.page() as page:
         posts = await saved.fetch_saved(
-            page, handle=handle, collection_id=collection_id, limit=limit
+            page,
+            handle=handle,
+            collection_id=collection_id,
+            limit=_clamp_limit(limit),
         )
     return _serialize(posts)
 
@@ -250,10 +262,10 @@ async def get_home_feed(limit: int = 15) -> list[dict[str, Any]]:
     """Read your home feed (timeline). Sponsored posts are dropped.
 
     Args:
-        limit: Max posts to return (default 15). Keep this modest.
+        limit: Max posts to return (default 15, capped at 50). Keep this modest.
     """
     async with _browser.page() as page:
-        posts = await home.fetch(page, limit=limit)
+        posts = await home.fetch(page, limit=_clamp_limit(limit))
     return _serialize(posts)
 
 
@@ -282,13 +294,16 @@ async def get_user_posts(
 
     Args:
         username: Instagram username without the leading "@".
-        limit: Max posts to return (default 24).
+        limit: Max posts to return (default 24, capped at 50).
         include_reels: Keep reels in the result (excluded by default — use
             `get_user_reels` for a reels-only view).
     """
     async with _browser.page() as page:
         posts = await profile.fetch_posts(
-            page, username=username, limit=limit, include_reels=include_reels
+            page,
+            username=username,
+            limit=_clamp_limit(limit),
+            include_reels=include_reels,
         )
     return _serialize(posts)
 
@@ -318,10 +333,12 @@ async def get_user_reels(
 
     Args:
         username: Instagram username without the leading "@".
-        limit: Max reels to return (default 12).
+        limit: Max reels to return (default 12, capped at 50).
     """
     async with _browser.page() as page:
-        reels = await profile.fetch_reels(page, username=username, limit=limit)
+        reels = await profile.fetch_reels(
+            page, username=username, limit=_clamp_limit(limit)
+        )
     return _serialize(reels)
 
 

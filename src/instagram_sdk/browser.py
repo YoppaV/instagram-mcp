@@ -17,14 +17,11 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, AsyncIterator, Callable, Union
 
 from .auth import (
-    LOCALE,
-    TIMEZONE_ID,
-    USER_AGENT,
-    VIEWPORT,
     SessionExpiredError,
+    browser_context_options,
     is_login_redirect,
 )
 
@@ -44,17 +41,32 @@ _WEBDRIVER_SCRUB = (
 _RELOGIN_HINT = "re-run: python -m scripts.auth_login"
 
 
+def _fingerprint(path: Path) -> tuple[str, int] | None:
+    """Identify a session file's content, or ``None`` if it can't be read."""
+    try:
+        return (str(path), path.stat().st_mtime_ns)
+    except OSError:
+        return None
+
+
 class BrowserSession:
-    """Single Playwright BrowserContext, lazily launched."""
+    """Single Playwright BrowserContext, lazily launched.
+
+    ``session_path`` may be a callable, resolved on every call. A login made
+    after the process started is then picked up without a restart, and the
+    warm context is rebuilt whenever the session file changes.
+    """
 
     def __init__(
         self,
-        session_path: Path,
+        session_path: Union[Path, Callable[[], Path]],
         *,
         idle_timeout_s: int = DEFAULT_IDLE_TIMEOUT_S,
         headless: bool = True,
     ) -> None:
-        self._session_path = session_path
+        self._session_source = session_path
+        self._loaded_fingerprint: tuple[str, int] | None = None
+        self._user_agent: str | None = None
         self._idle_timeout_s = idle_timeout_s
         self._headless = headless
 
@@ -66,15 +78,26 @@ class BrowserSession:
 
     @property
     def session_path(self) -> Path:
-        return self._session_path
+        source = self._session_source
+        return source() if callable(source) else source
+
+    @property
+    def user_agent(self) -> str | None:
+        """User agent of the running browser; ``None`` before the first launch."""
+        return self._user_agent
 
     async def _ensure_started(self) -> "BrowserContext":
-        if self._context is not None:
-            return self._context
+        session_path = self.session_path
+        fingerprint = _fingerprint(session_path)
 
-        if not self._session_path.exists():
+        if self._context is not None:
+            if fingerprint == self._loaded_fingerprint:
+                return self._context
+            await self._shutdown_locked()
+
+        if fingerprint is None:
             raise SessionExpiredError(
-                f"Instagram session file not found at {self._session_path}. "
+                f"Instagram session file not found at {session_path}. "
                 f"Run: python -m scripts.auth_login"
             )
 
@@ -88,13 +111,12 @@ class BrowserSession:
 
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(headless=self._headless)
+        options = browser_context_options(self._browser.version)
+        self._user_agent = options["user_agent"]
         self._context = await self._browser.new_context(
-            storage_state=str(self._session_path),
-            viewport=VIEWPORT,
-            user_agent=USER_AGENT,
-            locale=LOCALE,
-            timezone_id=TIMEZONE_ID,
+            storage_state=str(session_path), **options
         )
+        self._loaded_fingerprint = fingerprint
         await self._context.add_init_script(_WEBDRIVER_SCRUB)
         return self._context
 
@@ -157,6 +179,7 @@ class BrowserSession:
             except Exception:
                 pass
             self._context = None
+            self._loaded_fingerprint = None
         if self._browser is not None:
             try:
                 await self._browser.close()
