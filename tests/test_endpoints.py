@@ -13,6 +13,7 @@ Run with: ``venv/bin/python -m unittest tests.test_endpoints -v``
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 import unittest
@@ -229,6 +230,46 @@ class ProfileEndpointTests(unittest.TestCase):
                 )
             )
         self.assertEqual([p.id for p in posts], ["2001_500", "2002_500"])
+
+    def test_posts_paginated_query_and_reel_views_from_reels_tab(self) -> None:
+        # Live shape: scroll pages arrive as ..._connection and grid reels carry
+        # no play count; it is filled from the Reels tab.
+        grid = copy.deepcopy(_load("gql_profile_posts.json"))
+        clip = grid["data"]["xdt_api__v1__feed__user_timeline_graphql_connection"][
+            "edges"
+        ][1]["node"]
+        clip.pop("play_count", None)
+        clip["code"] = "RLNEW1"
+        page = FakePage(
+            responses=[
+                FakeResponse(
+                    GRAPHQL_URL,
+                    grid,
+                    friendly="PolarisProfilePostsTabContentQuery_connection",
+                ),
+                FakeResponse(
+                    GRAPHQL_URL,
+                    _load("gql_reels_tab_connection.json"),
+                    friendly="PolarisProfileReelsTabContentQuery_connection",
+                ),
+            ]
+        )
+        with _no_sleep_patch():
+            posts = _run(
+                profile.fetch_posts(
+                    page, username="carol", limit=10, include_reels=True
+                )
+            )
+        self.assertEqual([p.shortcode for p in posts], ["PC1", "RLNEW1"])
+        self.assertIsNone(posts[0].view_count)
+        self.assertEqual(posts[1].view_count, 123456)
+        self.assertEqual(
+            page.goto_calls,
+            [
+                "https://www.instagram.com/carol/",
+                "https://www.instagram.com/carol/reels/",
+            ],
+        )
 
     def test_fetch_reels(self) -> None:
         page = FakePage(

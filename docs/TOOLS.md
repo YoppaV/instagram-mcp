@@ -13,12 +13,17 @@ Todo `limit` tiene un tope de 50: un valor mayor se recorta, no da error.
 | `get_saved_collections` | — | `FN_COLLECTIONS` (GraphQL) |
 | `get_home_feed` | `limit=15` | `FN_TIMELINE` + HTML embebido del primer batch |
 | `get_user_profile` | `username` | `FN_PROFILE` |
-| `get_user_posts` | `username`, `limit=24`, `include_reels=false` | `FN_PROFILE_POSTS` |
-| `get_post` | `id_or_url` | HTML embebido, clave `EMBED_POST_KEY` |
+| `get_user_posts` | `username`, `limit=24`, `include_reels=false` | `FN_PROFILE_POSTS` (tupla de 2 friendly names) + `FN_REELS` para las vistas |
+| `get_post` | `id_or_url` | HTML embebido, clave `EMBED_POST_KEY` (+ `FN_REELS` para las vistas de un reel) |
 | `get_user_reels` | `username`, `limit=12` | `FN_REELS` (tupla de 2 friendly names) |
 | `download_media` | `id_or_url`, `indices?`, `download_videos=false` | re-fetch del post + httpx CDN |
 
 ## Notas
+- **Vistas (`view_count` / `play_count`)**: Instagram sólo las sirve en la pestaña
+  Reels (`play_count`) y en los feeds REST de guardados (`play_count`,
+  `ig_play_count`). La rejilla y la página del post mandan `view_count: null`, así
+  que `get_user_posts(include_reels=True)` y `get_post` las completan recorriendo la
+  pestaña Reels del autor (3 reels por scroll; `get_post` sólo mira los ~20 más recientes).
 - **Saved son privados** → navegan bajo `/<handle>/saved/...`; `<handle>` se deriva
   del nombre del fichero de sesión (`_resolve_own_handle`).
 - **`download_media`** re-fetchea el post fresco antes de descargar porque las URLs

@@ -116,8 +116,27 @@ class ExtractReelsTests(unittest.TestCase):
         self.assertEqual(first.thumbnail_url, "https://cdn.example.com/5001_thumb.jpg")
         self.assertEqual(first.like_count, 200)
 
+    def test_current_reels_tab_shape(self) -> None:
+        # Shape served since late 2026: data.fetch__XDTUserDict.clips_connection.
+        reels = parsers.extract_reels(_load("gql_reels_tab_connection.json"))
+        self.assertEqual([r.shortcode for r in reels], ["RLNEW1", "RLNEW2"])
+        self.assertEqual(reels[0].play_count, 123456)
+        self.assertEqual(reels[0].like_count, 300)
+        # A real 0 must survive (not be swallowed by a falsy ``or`` chain).
+        self.assertEqual(reels[1].play_count, 0)
+
     def test_empty_payload(self) -> None:
         self.assertEqual(parsers.extract_reels({}), [])
+
+
+class PlayCountTests(unittest.TestCase):
+    def test_prefers_play_count_then_ig_play_count(self) -> None:
+        base = {"code": "X", "media_type": 2, "view_count": None}
+        post = parsers.parse_post({**base, "play_count": 31188, "ig_play_count": 28615})
+        self.assertEqual(post.view_count, 31188)
+        post = parsers.parse_post({**base, "ig_play_count": 28615})
+        self.assertEqual(post.view_count, 28615)
+        self.assertIsNone(parsers.parse_post(base).view_count)
 
 
 class ExtractCollectionsTests(unittest.TestCase):

@@ -313,7 +313,7 @@ async def get_post(id_or_url: str) -> dict[str, Any] | None:
     """Fetch one post by shortcode or URL.
 
     Returns the author, caption, media (images / videos / carousel slides) and
-    like/comment counts.
+    like/comment counts, plus ``view_count`` (plays) for reels.
 
     Args:
         id_or_url: The post shortcode (e.g. "C8xY1zAbCdE") or a full

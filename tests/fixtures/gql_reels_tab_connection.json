@@ -1,0 +1,110 @@
+{
+  "data": {
+    "fetch__XDTUserDict": {
+      "id": "900",
+      "clips_connection": {
+        "edges": [
+          {
+            "node": {
+              "__typename": "XDTClipsItemDict",
+              "media": {
+                "pk": "8101",
+                "id": "8101_900",
+                "code": "RLNEW1",
+                "media_type": 2,
+                "product_type": "clips",
+                "taken_at": 1700000001,
+                "caption": {
+                  "text": "reel 1"
+                },
+                "like_count": 300,
+                "comment_count": 12,
+                "play_count": 123456,
+                "view_count": null,
+                "like_and_view_counts_disabled": false,
+                "image_versions2": {
+                  "candidates": [
+                    {
+                      "url": "https://cdn.example.com/8101.jpg",
+                      "width": 640,
+                      "height": 1136
+                    }
+                  ]
+                },
+                "video_versions": [
+                  {
+                    "url": "https://cdn.example.com/8101.mp4",
+                    "width": 640,
+                    "height": 1136,
+                    "type": 101
+                  }
+                ],
+                "user": {
+                  "pk": "900",
+                  "id": "900",
+                  "username": "example_user",
+                  "is_verified": false,
+                  "views_on_grid_status": "SHOW_VIEWS_ON_GRID"
+                }
+              }
+            },
+            "cursor": "c1"
+          },
+          {
+            "node": {
+              "__typename": "XDTClipsItemDict",
+              "media": {
+                "pk": "8102",
+                "id": "8102_900",
+                "code": "RLNEW2",
+                "media_type": 2,
+                "product_type": "clips",
+                "taken_at": 1700000002,
+                "caption": {
+                  "text": "reel 2"
+                },
+                "like_count": 40,
+                "comment_count": 3,
+                "play_count": 0,
+                "view_count": null,
+                "like_and_view_counts_disabled": false,
+                "image_versions2": {
+                  "candidates": [
+                    {
+                      "url": "https://cdn.example.com/8102.jpg",
+                      "width": 640,
+                      "height": 1136
+                    }
+                  ]
+                },
+                "video_versions": [
+                  {
+                    "url": "https://cdn.example.com/8102.mp4",
+                    "width": 640,
+                    "height": 1136,
+                    "type": 101
+                  }
+                ],
+                "user": {
+                  "pk": "900",
+                  "id": "900",
+                  "username": "example_user",
+                  "is_verified": false,
+                  "views_on_grid_status": "SHOW_VIEWS_ON_GRID"
+                }
+              }
+            },
+            "cursor": "c2"
+          }
+        ],
+        "page_info": {
+          "end_cursor": "c2",
+          "has_next_page": true
+        }
+      }
+    }
+  },
+  "extensions": {
+    "is_final": true
+  }
+}

@@ -61,5 +61,20 @@ class NormalizeUsernameTests(unittest.TestCase):
             normalize_username("has spaces")
 
 
+class ScrollBudgetTests(unittest.TestCase):
+    def test_reels_tab_budget_reaches_max_limit(self) -> None:
+        from instagram_sdk.endpoints._ids import (
+            MAX_SCROLLS_CAP,
+            REELS_PER_SCROLL,
+            scroll_budget,
+        )
+
+        # The Reels tab loads 12 reels, then 3 per scroll: 50 must be reachable.
+        budget = scroll_budget(50, REELS_PER_SCROLL)
+        self.assertGreaterEqual(12 + budget * REELS_PER_SCROLL, 50)
+        self.assertLessEqual(budget, MAX_SCROLLS_CAP)
+        self.assertEqual(scroll_budget(10_000, REELS_PER_SCROLL), MAX_SCROLLS_CAP)
+
+
 if __name__ == "__main__":
     unittest.main()

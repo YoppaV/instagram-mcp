@@ -21,11 +21,20 @@ BASE = "https://www.instagram.com"
 # The home feed's first page is embedded in the HTML; this query paginates it.
 FN_TIMELINE = "PolarisFeedRootPaginationCachedQuery_subscribe"
 FN_PROFILE = "PolarisProfilePageContentQuery"
-FN_PROFILE_POSTS = "PolarisProfilePostsQuery"
+# The profile grid: the first batch (~12 items) comes from
+# PolarisProfilePostsQuery; every scroll-driven page is
+# PolarisProfilePostsTabContentQuery_connection. Same response shape
+# (xdt_api__v1__feed__user_timeline_graphql_connection).
+FN_PROFILE_POSTS: tuple[str, ...] = (
+    "PolarisProfilePostsQuery",
+    "PolarisProfilePostsTabContentQuery_connection",
+)
 # The Reels tab fires two different friendly names: the first batch (~12
 # items) comes from PolarisProfileReelsTabContentQuery on initial render,
 # then each scroll-driven page is PolarisProfileReelsTabContentQuery_connection.
-# Both share the same response shape (xdt_api__v1__clips__user__connection_v2).
+# Both share the same response shape (data.fetch__XDTUserDict.clips_connection;
+# formerly xdt_api__v1__clips__user__connection_v2). The Reels tab is the only
+# profile surface whose media carry ``play_count``.
 FN_REELS: tuple[str, ...] = (
     "PolarisProfileReelsTabContentQuery",
     "PolarisProfileReelsTabContentQuery_connection",
@@ -107,13 +116,19 @@ def collection_url(handle: str, collection_id: str) -> str:
     return f"{BASE}/{handle}/saved/{collection_id}/{collection_id}/"
 
 
-def scroll_budget(limit: int | None) -> int:
+# Items a scroll step typically brings in. Most feeds serve about a dozen per
+# page; the Reels tab only loads one row (3 reels) per scroll step.
+ITEMS_PER_SCROLL = 10
+REELS_PER_SCROLL = 3
+
+
+def scroll_budget(limit: int | None, per_scroll: int = ITEMS_PER_SCROLL) -> int:
     """How many scroll iterations to allow for a requested ``limit``.
 
-    Instagram serves roughly a dozen items per page; allow a little slack, but
-    never exceed ``MAX_SCROLLS_CAP`` — runaway scrolling is exactly what trips
-    automation defenses.
+    ``per_scroll`` is how many items one scroll step usually yields; allow a
+    little slack, but never exceed ``MAX_SCROLLS_CAP`` — runaway scrolling is
+    exactly what trips automation defenses.
     """
     if not limit or limit <= 0:
         return MAX_SCROLLS_CAP
-    return min(MAX_SCROLLS_CAP, math.ceil(limit / 10) + 4)
+    return min(MAX_SCROLLS_CAP, math.ceil(limit / max(1, per_scroll)) + 4)
