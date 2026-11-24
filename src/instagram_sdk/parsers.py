@@ -56,6 +56,22 @@ def _caption_text(node: dict[str, Any]) -> str | None:
     return None
 
 
+# Public play count, in order of preference. ``play_count`` is the figure the
+# Reels tab shows on each thumbnail (Instagram + Facebook cross-post plays);
+# ``ig_play_count`` is the Instagram-only share, present on REST feeds.
+# ``view_count`` is still in the schema but Instagram now always sends null.
+_PLAY_COUNT_KEYS = ("play_count", "ig_play_count", "view_count", "video_view_count")
+
+
+def _play_count(node: dict[str, Any]) -> int | None:
+    """First integer play/view count on a media node (0 is a valid count)."""
+    for key in _PLAY_COUNT_KEYS:
+        value = node.get(key)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
 def parse_user(node: dict[str, Any] | None) -> User | None:
     """Build a ``User`` from a media node's ``user`` sub-object."""
     if not node:
@@ -138,7 +154,7 @@ def parse_post(node: dict[str, Any] | None) -> Post | None:
         media=_media_items(node),
         like_count=node.get("like_count"),
         comment_count=node.get("comment_count"),
-        view_count=node.get("view_count") or node.get("play_count"),
+        view_count=_play_count(node),
         taken_at=node.get("taken_at"),
         product_type=node.get("product_type"),
         location=location.get("name") if isinstance(location, dict) else None,
@@ -170,7 +186,7 @@ def parse_reel(node: dict[str, Any] | None) -> Reel | None:
         thumbnail_url=best_img.get("url") if best_img else None,
         like_count=node.get("like_count"),
         comment_count=node.get("comment_count"),
-        play_count=node.get("play_count") or node.get("view_count"),
+        play_count=_play_count(node),
         taken_at=node.get("taken_at"),
         author=parse_user(user) or None,
     )
@@ -286,11 +302,25 @@ def extract_profile_posts(payload: dict[str, Any]) -> list[Post]:
     return out
 
 
+def _reels_edges(payload: Any) -> list[dict[str, Any]]:
+    """Edges of a Reels-tab payload, in either of the shapes Instagram served.
+
+    Current: ``data.fetch__XDTUserDict.clips_connection.edges``.
+    Legacy: ``data.xdt_api__v1__clips__user__connection_v2.edges``.
+    """
+    data = (payload or {}).get("data") or {}
+    user = data.get("fetch__XDTUserDict")
+    if isinstance(user, dict):
+        connection = user.get("clips_connection") or {}
+        edges = connection.get("edges") or []
+        return [e for e in edges if isinstance(e, dict)]
+    return _connection_edges(payload, "xdt_api__v1__clips__user__connection_v2")
+
+
 def extract_reels(payload: dict[str, Any]) -> list[Reel]:
-    """``PolarisProfileReelsTabContentQuery`` → reels."""
+    """``PolarisProfileReelsTabContentQuery`` (and ``_connection``) → reels."""
     out: list[Reel] = []
-    key = "xdt_api__v1__clips__user__connection_v2"
-    for edge in _connection_edges(payload, key):
+    for edge in _reels_edges(payload):
         node = edge.get("node") or {}
         media = node.get("media")
         reel = parse_reel(media if isinstance(media, dict) else node)
