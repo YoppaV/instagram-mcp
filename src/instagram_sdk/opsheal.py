@@ -29,8 +29,8 @@ Two pieces:
 
     A blocking signal on the heal page (navigation or any of the web's own
     GraphQL answers) stops the account like anywhere else. Limits: one cure
-    per op every 6 h, two per account per day; a cure costs 10 requests of
-    the budget. ``INSTAGRAM_SELF_HEAL=false`` turns it off.
+    per op every 6 h, two per account per day; a cure costs 8 requests of
+    the budget (``HEAL_COST``, measured). ``INSTAGRAM_SELF_HEAL=false`` turns it off.
 
 Nothing here logs or stores tokens, cookies or request bodies.
 """
@@ -59,7 +59,12 @@ if TYPE_CHECKING:
 log = logging.getLogger("instagram_sdk")
 
 CACHE_VERSION = 1
-HEAL_COST = 10
+# A real cure (2026-11-28, ``ABORT_STRICT``, profile page) sent 7 requests to
+# www.instagram.com: the document and 6 GraphQL queries of the web app. One
+# more of margin, since the web's GraphQL count varies by page. A whole call
+# (navigation + send + cure + retry + a token refresh) stays well under the
+# per-call cap of 20.
+HEAL_COST = 8
 HEAL_WAIT_S = 20.0
 HEAL_NAV_TIMEOUT_MS = 30_000
 SCROLL_STEPS = 3
@@ -68,6 +73,26 @@ OP_HEAL_INTERVAL_S = 6 * 3600
 ACCOUNT_HEALS_PER_DAY = 2
 DEBUG_KEEP = 5
 HEAL_BLOCKED_RESOURCES = frozenset({"image", "media", "font", "stylesheet"})
+# What the heal tab lets reach www.instagram.com besides the document.
+ABORT_STRICT = "strict"    # only GraphQL
+ABORT_LOGGING = "logging"  # GraphQL and anything but known telemetry
+_TELEMETRY_PREFIXES = ("/ajax/bz", "/ajax/bulk-route-definitions", "/logging/",
+                       "/api/v1/web/comet/log", "/ajax/qm", "/ajax/webstorage")
+
+
+def is_instagram_host(host: str | None) -> bool:
+    """www.instagram.com and friends; not the static CDN (cdninstagram.com)."""
+    host = (host or "").lower()
+    return host == "instagram.com" or host.endswith(".instagram.com")
+
+
+def heal_request_allowed(resource_type: str, path: str, mode: str = ABORT_STRICT) -> bool:
+    """Whether a heal-tab request to instagram.com may go out."""
+    if resource_type == "document" or path in ops.ENDPOINTS:
+        return True
+    if mode == ABORT_STRICT:
+        return False
+    return not any(path.startswith(p) for p in _TELEMETRY_PREFIXES)
 
 # Outcomes of the last ``Healer.heal`` (for the error message).
 HEALED = "healed"
@@ -369,6 +394,7 @@ class _Capture:
         self.tasks: set[asyncio.Task] = set()
         # Requests of the heal page that reached www.instagram.com.
         self.sent = 0
+        self.aborted = 0
         self.kinds: dict[str, int] = {}
 
 
@@ -382,7 +408,9 @@ class Healer:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         uniform: Callable[[float, float], float] = random.uniform,
         wait_s: float = HEAL_WAIT_S,
+        abort_mode: str = ABORT_STRICT,
     ) -> None:
+        self.abort_mode = abort_mode
         self.store = store
         self.enabled = enabled
         self.debug_dir = debug_dir
@@ -437,8 +465,8 @@ class Healer:
                                             source="heal:bundle", client_revision=revision)
         self.last_outcome = HEALED if changed else (UNCHANGED if seen else NOT_FOUND)
         log.warning("instagram_sdk: self-heal of %s: %s (%d requests to instagram.com %s, "
-                    "%d GraphQL ops seen)", op.name, self.last_outcome, capture.sent,
-                    capture.kinds, len(capture.requests))
+                    "%d aborted, %d GraphQL ops seen)", op.name, self.last_outcome,
+                    capture.sent, capture.kinds, capture.aborted, len(capture.requests))
         self.last_sent = capture.sent
         return changed
 
@@ -485,16 +513,17 @@ class Healer:
             async def _route(route: Any) -> None:
                 # The web's GraphQL POSTs are captured here. The one we are
                 # healing is aborted: its shape is all we need and our retry
-                # sends it anyway. The rest go through so the page behaves
-                # like the web (later queries can depend on earlier ones).
+                # sends it anyway. Other GraphQL goes through (later queries can
+                # depend on earlier ones); every other instagram.com request
+                # but the document (telemetry, ajax, logging) is aborted.
                 try:
                     request = route.request
                     if request.resource_type in HEAL_BLOCKED_RESOURCES:
                         await route.abort()
                         return
+                    url = urlparse(request.url)
                     parsed = None
-                    if (request.method == "POST"
-                            and urlparse(request.url).path in ops.ENDPOINTS):
+                    if request.method == "POST" and url.path in ops.ENDPOINTS:
                         parsed = parse_graphql_post(request.post_data)
                     if parsed is not None:
                         friendly, doc_id, variables = parsed
@@ -502,9 +531,14 @@ class Healer:
                         if friendly == op.friendly_name:
                             await route.abort()
                             return
-                    if (urlparse(request.url).hostname or "").endswith("instagram.com"):
+                    if is_instagram_host(url.hostname):
+                        if not heal_request_allowed(request.resource_type, url.path,
+                                                    self.abort_mode):
+                            capture.aborted += 1
+                            await route.abort()
+                            return
                         capture.sent += 1
-                        kind = "graphql" if parsed is not None else request.resource_type
+                        kind = "graphql" if url.path in ops.ENDPOINTS else request.resource_type
                         capture.kinds[kind] = capture.kinds.get(kind, 0) + 1
                     await route.fallback()
                 except Exception:

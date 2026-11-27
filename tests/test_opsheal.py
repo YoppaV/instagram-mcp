@@ -79,8 +79,10 @@ class HealPage:
     """Second tab: on goto it fires the configured requests/responses."""
 
     def __init__(self, posts: list[str], *, scripts: list[str] = (), xhr_body: str = "{}",
-                 xhr_status: int = 200, final_url: str | None = None, html: str = "") -> None:
+                 xhr_status: int = 200, final_url: str | None = None, html: str = "",
+                 extra: list[str] = ()) -> None:
         self._posts = posts
+        self._extra = list(extra)
         self._scripts = list(scripts)
         self._xhr_body = xhr_body
         self._xhr_status = xhr_status
@@ -111,8 +113,16 @@ class HealPage:
                 continue
             for fn in self._handlers.get("response", []):
                 fn(_Resp(req, self._xhr_status, self._xhr_body))
+        for url in self._extra:
+            route = _Route(_Req(url, None, "xhr"))
+            await self._route(route)
+            if route.aborted:
+                self.aborted.append(url)
         for js in self._scripts:
             req = _Req("https://static.cdninstagram.com/rsrc.php/x.js", None, "script")
+            route = _Route(req)
+            await self._route(route)
+            assert not route.aborted, "CDN scripts must load"
             for fn in self._handlers.get("response", []):
                 fn(_Resp(req, 200, js))
         await asyncio.sleep(0)
@@ -184,6 +194,18 @@ class PureHelperTests(unittest.TestCase):
               '(function(a,b,c,d,e,f){e.exports="99998888777766665"}),null);')
         self.assertEqual(opsheal.extract_bundle_doc_ids(js),
                          {"PolarisSearchBoxRefetchableQuery": "99998888777766665"})
+
+    def test_heal_tab_request_filter(self) -> None:
+        self.assertTrue(opsheal.is_instagram_host("www.instagram.com"))
+        self.assertFalse(opsheal.is_instagram_host("static.cdninstagram.com"))
+        allowed = opsheal.heal_request_allowed
+        self.assertTrue(allowed("document", "/carol/"))
+        self.assertTrue(allowed("fetch", "/api/graphql"))
+        self.assertTrue(allowed("xhr", "/graphql/query"))
+        self.assertFalse(allowed("xhr", "/ajax/bz"))
+        self.assertFalse(allowed("fetch", "/api/v1/web/whatever/"))
+        self.assertTrue(allowed("fetch", "/api/v1/web/whatever/", opsheal.ABORT_LOGGING))
+        self.assertFalse(allowed("xhr", "/ajax/bz", opsheal.ABORT_LOGGING))
 
     def test_parse_graphql_post(self) -> None:
         got = opsheal.parse_graphql_post(_post("Q", "12345678", {"a": 1}))
@@ -268,7 +290,8 @@ class HealFlowTests(unittest.TestCase):
     def test_stale_heals_from_the_web_request_and_retries_once(self) -> None:
         heal = HealPage([_post(self.friendly, NEW_DOC, self.captured),
                          _post("PolarisProfilePageContentQuery", "55556666777788889",
-                               {"id": "1", "enable_integrity_filters": True})])
+                               {"id": "1", "enable_integrity_filters": True})],
+                        extra=["https://www.instagram.com/ajax/bz?x=1"])
         client, page, ctx, healer, _ = _client([fetch_result(STALE), fetch_result(POSTS)],
                                                heal, tmp=self.tmp)
         root = _run(client.graphql("profile_posts_first", username="carol"))
@@ -276,7 +299,7 @@ class HealFlowTests(unittest.TestCase):
         self.assertEqual(heal.gotos, ["https://www.instagram.com/carol/"])
         self.assertTrue(heal.closed)
         # The healed op never reaches Instagram from the heal page; others do.
-        self.assertEqual(heal.aborted, [self.friendly])
+        self.assertEqual(heal.aborted, [self.friendly, "https://www.instagram.com/ajax/bz?x=1"])
         self.assertEqual(healer.last_sent, 1)
         self.assertEqual(_sent_doc_ids(page), [ops.TABLE["profile_posts_first"].doc_id, NEW_DOC])
         retry_vars = json.loads(parse_qs(page.fetches[1]["body"])["variables"][0])
@@ -286,8 +309,11 @@ class HealFlowTests(unittest.TestCase):
         cache = json.loads((self.tmp / "ops_cache.json").read_text())
         self.assertEqual(cache["ops"]["PolarisProfilePageContentQuery"]["doc_id"],
                          "55556666777788889")
-        # A heal costs 10 requests: 1 nav + 1 send + 10 + 1 retry.
-        self.assertEqual(client.pacer.requests_this_call, 13)
+        # 1 nav + 1 send + HEAL_COST + 1 retry, inside the per-call cap even
+        # with a token refresh on top.
+        self.assertEqual(client.pacer.requests_this_call, 3 + opsheal.HEAL_COST)
+        from instagram_sdk.pacer import MAX_REQUESTS_PER_CALL
+        self.assertLessEqual(4 + opsheal.HEAL_COST, MAX_REQUESTS_PER_CALL)
         # Next call uses the cured doc_id straight away.
         client.new_call()
         page.results.append(fetch_result(POSTS))

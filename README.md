@@ -397,8 +397,10 @@ no blocking signal — for a rotated id Instagram answers HTTP 200
 then stores the cure in `<state>/ops_cache.json` (global, re-templated with the
 repo's holes) and retries the call once. A cache entry older than
 `ops.TABLE_DATE` is ignored, so updating `ops.py` always wins. Limits: one cure
-per op every 6 h, two per account per day, each costs 10 requests of the
-budget. A blocking signal on the heal page stops the account as anywhere else.
+per op every 6 h, two per account per day, each costs 8 requests of the
+budget (a real cure sent 7 to www.instagram.com: the document and the web's
+own GraphQL; every other instagram.com request of that tab — telemetry,
+ajax, logging — is aborted). A blocking signal on the heal page stops the account as anywhere else.
 If the heal finds the same `doc_id`, the error says the response changed shape
 (fix `root`/parsers). The failing body is kept in `<state>/debug/` (last 5,
 no headers or tokens). Ops with no recipe (`search_box`) only get step 3.

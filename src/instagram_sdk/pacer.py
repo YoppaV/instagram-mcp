@@ -74,7 +74,7 @@ class Pacer:
         """Wait the right pause, then count the request. Raises on the cap.
 
         ``cost`` > 1 charges a heavier action as several requests (a self-heal
-        page load counts as 10).
+        page load counts as ``opsheal.HEAL_COST``).
         """
         self._check_cap(cost)
         if self.budget is not None:
