@@ -67,8 +67,8 @@ Example layout (UGREEN UGOS Pro; adapt the paths):
 |---|---|
 | compose, `.env`, `secrets/` | `/volume1/HDD-Archivo/Docker-Stacks/stacks/instagram-mcp/` |
 | sessions (read-only in the container) | `/volume2/SSD-Proyectos/Instagram-MCP/sessions/` |
-| state: lock, budget, block state, id cache | `/volume2/SSD-Proyectos/Instagram-MCP/state/` |
-| `download_media` output | `/volume2/SSD-Proyectos/Instagram-MCP/downloads/` |
+| state: lock, budget, block state, caches (writable) | `/volume2/SSD-Proyectos/Instagram-MCP/state/` |
+| `download_media` / bulk downloads (writable) | `/volume2/SSD-Proyectos/Instagram-MCP/downloads/` |
 | source to build the image from | `/volume2/SSD-Proyectos/Instagram-MCP/repo/` |
 
 ```bash
@@ -83,6 +83,17 @@ docker compose ps        # STATUS should become "healthy"
 
 `.env` needs at least `PUID`/`PGID` (owner of the data folders, `id -u`,
 `id -g`) and `INSTAGRAM_MCP_ALLOWED_HOSTS`.
+
+`state/` and `downloads/` must be **writable** by `PUID:PGID`; `sessions/`
+only readable. The state fails closed: if the server cannot write
+`state/` (wrong owner, read-only mount) every tool call is refused with
+`StateUnavailableError` instead of running without the lock and the budget.
+The compose pins `INSTAGRAM_ALLOW_DEGRADED_STATE=false`; don't change that
+on the server. Quick check after `up`:
+
+```bash
+docker compose exec instagram-mcp sh -c 'touch /data/state/.w /data/downloads/.w && rm /data/state/.w /data/downloads/.w && echo writable'
+```
 
 What the image and compose do:
 

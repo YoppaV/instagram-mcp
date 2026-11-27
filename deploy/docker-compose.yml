@@ -34,6 +34,10 @@ services:
       INSTAGRAM_SESSION_DIR: /data/sessions
       INSTAGRAM_STATE_DIR: /data/state
       INSTAGRAM_DOWNLOADS_DIR: /data/downloads
+      # State fails closed: if /data/state is not writable by PUID:PGID every
+      # call is refused (StateUnavailableError). Never run degraded here: the
+      # lock and the budget are what keep the account safe.
+      INSTAGRAM_ALLOW_DEGRADED_STATE: "false"
       INSTAGRAM_DEFAULT_ACCOUNT: ${INSTAGRAM_DEFAULT_ACCOUNT:-}
       BROWSER_HEADLESS: "true"
       BROWSER_IDLE_TIMEOUT_S: "180"
@@ -48,7 +52,9 @@ services:
     volumes:
       # Sessions are produced on the PC (headed login) and only read here.
       - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/sessions:/data/sessions:ro
+      # Must be writable by PUID:PGID (lock, budget, block state, caches).
       - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/state:/data/state
+      # Writable too: download_media files and the bulk-download manifests.
       - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/downloads:/data/downloads
     tmpfs:
       - /tmp:size=512m
