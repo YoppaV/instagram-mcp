@@ -4,40 +4,47 @@ Referencia exhaustiva de las **9 tools** que expone `server.py` (8 read-only +
 `download_media`). Todas devuelven JSON (dataclasses → dict); `download_media`
 además devuelve objetos `Image` inline. Router y arquitectura en `../AGENTS.md`.
 
-Todo `limit` tiene un tope de 50: un valor mayor se recorta, no da error.
+Todo `limit` tiene un tope de 50: un valor mayor se recorta, no da error. Cada
+llamada hace como mucho 20 peticiones a Instagram y 8 páginas.
 
-| Tool | Parámetros | Reconocido por |
+| Tool | Parámetros | Operaciones (`ops.py`) |
 |------|-----------|----------------|
-| `auth_status` | — | sin red; lee el fichero de sesión |
-| `get_saved_posts` | `collection_id?`, `limit=24` | `FR_SAVED` / `FR_COLLECTION_FEED` (REST) |
-| `get_saved_collections` | — | `FN_COLLECTIONS` (GraphQL) |
-| `get_home_feed` | `limit=15` | `FN_TIMELINE` + HTML embebido del primer batch |
-| `get_user_profile` | `username` | `FN_PROFILE` |
-| `get_user_posts` | `username`, `limit=24`, `include_reels=false` | `FN_PROFILE_POSTS` (tupla de 2 friendly names) + `FN_REELS` para las vistas |
-| `get_post` | `id_or_url` | HTML embebido, clave `EMBED_POST_KEY` (+ `FN_REELS` para las vistas de un reel) |
-| `get_user_reels` | `username`, `limit=12` | `FN_REELS` (tupla de 2 friendly names) |
-| `download_media` | `id_or_url`, `indices?`, `download_videos=false` | re-fetch del post + httpx CDN |
+| `auth_status` | — | sin red; lee el fichero de sesión y el estado de la cuenta (`state`, `block`) |
+| `get_saved_posts` | `collection_id?`, `limit=24` | REST `saved_posts`; con colección, GraphQL `saved_collection` |
+| `get_saved_collections` | — | GraphQL `saved_collections` (raíz `viewer.collections_unified_with_auto_collections`) |
+| `get_home_feed` | `limit=15` | HTML de `/` (o `home_first`) + `home_page` |
+| `get_user_profile` | `username` | `search_box` (username → id, coincidencia exacta; respaldo `profile_posts_first`) + `profile_info` |
+| `get_user_posts` | `username`, `limit=24`, `include_reels=false` | `profile_posts_first` + `profile_posts_page`; reels del autor para las vistas |
+| `get_post` | `id_or_url` | HTML de `/p/<code>/`, clave `EMBED_POST_KEY` (+ reels del autor para las vistas) |
+| `get_user_reels` | `username`, `limit=12` | `search_box` + `profile_reels_first` + `profile_reels_page` |
+| `download_media` | `id_or_url`, `indices?`, `download_videos=false` | re-fetch del post (sin vistas) + httpx CDN fuera del lock |
 
 ## Notas
-- **Vistas (`view_count` / `play_count`)**: Instagram sólo las sirve en la pestaña
-  Reels (`play_count`) y en los feeds REST de guardados (`play_count`,
-  `ig_play_count`). La rejilla y la página del post mandan `view_count: null`, así
-  que `get_user_posts(include_reels=True)` y `get_post` las completan recorriendo la
-  pestaña Reels del autor (3 reels por scroll; `get_post` sólo mira los ~20 más recientes).
-- **Saved son privados** → navegan bajo `/<handle>/saved/...`; `<handle>` se deriva
-  del nombre del fichero de sesión (`_resolve_own_handle`).
+- **Transporte**: cada petición es un `fetch` dentro de una pestaña fija de
+  instagram.com con imágenes, vídeo, fuentes, CSS y scripts bloqueados. Ya no se
+  navega y se hace scroll.
+- **Bloqueos**: 429, "please wait", `feedback_required`, challenge/checkpoint,
+  suspensión, consentimiento o `login_required` → `AccountBlockedError` sin
+  reintento; la cuenta queda en `cooldown` (12 h, se levanta sola) o `blocked`
+  (manual: re-login o `python -m scripts.account_state --clear <handle>`).
+  Mientras dure, toda llamada falla al instante sin red.
+- **Vistas (`view_count` / `play_count`)**: sólo la pestaña Reels (`play_count`) y
+  el feed REST de guardados las traen. `get_user_posts(include_reels=True)` y
+  `get_post` las completan con la pestaña Reels del autor (primera página + 2 más,
+  best-effort: un fallo ahí no hace fallar la tool).
+- **Saved** ya no usan el handle: el feed REST y las consultas `viewer` van por
+  la cookie de sesión. Una colección leída por GraphQL llega **sin `video_url`
+  ni `taken_at`** (la web no los pide en esa vista).
+- **Paginación**: la gobierna el cursor de Instagram, no los ítems que pasan el
+  filtro; un perfil casi todo reels ya no corta `get_user_posts` antes de tiempo.
 - **`download_media`** re-fetchea el post fresco antes de descargar porque las URLs
-  del CDN de Instagram son firmadas y efímeras. Si devuelve `skipped` con `no_url`,
-  esa media ya no tiene URL válida. Los vídeos sólo bajan con `download_videos=True`.
-- Las constantes `FN_*` / `FR_*` / `EMBED_POST_KEY` viven en `endpoints/_ids.py`
-  (único punto a parchear ante rotación — ver [README](../README.md#maintenance--when-instagram-rotates-endpoints)).
+  del CDN de Instagram son firmadas y efímeras; escribe vía `.part` + rename.
 
 ## Debugging (resumen; detalle en el [README](../README.md#troubleshooting))
-- `get_saved_posts` devuelve `[]` tras ~30 s → `--username` no era el de la cuenta;
-  repetir el login con el usuario exacto.
-- Otra tool devuelve `[]` → friendly-name de GraphQL rotado; DevTools → Network →
-  `fb_api_req_friendly_name` → parchear `FN_*`/`FR_*` → fixture anonimizada.
-- `SessionExpiredError` → re-login (`python -m scripts.auth_login`); fichero debe
-  llamarse `<handle>_instagram_state.json`.
+- `AccountBlockedError` → parar; ver `kind`. Rate limit: esperar. Resto: resolver
+  en el navegador propio y re-login o `scripts.account_state --clear`.
+- `DocIdStaleError` / `OperationFailedError` con nombre de operación → `doc_id`
+  rotado; DevTools → Network → copiar `doc_id`/`variables` a `ops.py`.
+- `SessionExpiredError` → re-login (`python -m scripts.auth_login`).
 - Chromium no arranca (WSL2/Linux) → `sudo venv/bin/python -m playwright install-deps chromium`;
   en Windows, repetir `venv\Scripts\python -m playwright install chromium`.

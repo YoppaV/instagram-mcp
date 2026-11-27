@@ -9,47 +9,50 @@ librería desde el pipeline `social-ingest`. Stack: Python 3.10-3.12, FastMCP
 (`mcp[cli]`), Playwright (Chromium), httpx, stdlib `unittest`.
 
 ## Arquitectura
-No fabricamos peticiones HTTP firmadas a mano (Instagram exige `X-IG-App-ID`,
-tokens CSRF...). En su lugar **conducimos un navegador logueado con Playwright e
-interceptamos las respuestas JSON que la propia web de Instagram dispara** — ella
-firma por nosotros. Patrón compartido: ver skill `playwright-intercept`.
-
-Tres sabores de transporte comparten un mismo matcher (`scraper._matches`):
-- **GraphQL** — casi todo POSTea a `/api/graphql`; las operaciones se distinguen
-  por `fb_api_req_friendly_name` del body → constantes `FN_*` en `endpoints/_ids.py`.
-- **REST** — saved posts y collection feeds usan `GET /api/v1/feed/...` con path
-  distintivo → constantes `FR_*`.
-- **HTML embebido** — página de un post y *primer* batch del home feed van en
-  `<script type="application/json">` → `parsers.find_embedded`, `EMBED_POST_KEY`.
+**Fetch dentro de la página.** Una pestaña fija de instagram.com por cuenta, con
+imágenes/vídeo/fuentes/CSS/scripts abortados; cada dato sale de un `fetch`
+ejecutado con `page.evaluate` en esa pestaña, así el navegador pone las cookies.
+Sí construimos nosotros la petición, pero solo con lo que la propia web manda:
+REST con `X-IG-App-ID`; GraphQL con `doc_id` + `variables` de `ops.py` y los
+tokens del HTML (`fb_dtsg`, `lsd`, `actorID`) + `X-CSRFToken` de la cookie. Nada
+de cabeceras inventadas ni firmas.
 
 Piezas clave:
-- `browser.BrowserSession` — singleton Playwright lazy; una context caliente,
-  llamadas **serializadas tras `asyncio.Lock`** (nunca paralelas), apagado por idle.
-- `auth` — carga `storage_state` (cookies), detecta expiración
-  (`SessionExpiredError`, redirect a `/accounts/login`); "autenticado" = cookies
-  `sessionid` + `ds_user_id`.
-- `scraper.scroll_collect` / `intercept_single_response` — el loop genérico
-  navegar→interceptar→scrollear que reusan todos los endpoints.
-
-El detalle del contrato de cada endpoint vive en `src/instagram_sdk/endpoints/CLAUDE.md`
-(lazy). Forma compartida con los 6 MCP hermanos: skill `mcp-readonly-server`.
+- `runtime.Runtime.run` — estado de la cuenta (falla sin red si está bloqueada)
+  → lock (**nunca dos llamadas a la vez**) → contexto → `InPageClient`.
+- `browser.BrowserManager` — un Chromium, un contexto + pestaña por cuenta,
+  Client Hints coherentes por CDP, recuperación si Chromium muere, apagado por idle.
+  `BrowserSession` es la fachada de librería (`social-ingest`).
+- `inpage.InPageClient` — `rest()` / `graphql()` / `navigate_html()`; toda
+  respuesta pasa por `guard` antes que nada.
+- `guard` + `accounts` — señal de bloqueo → `AccountBlockedError`, cero
+  reintentos, estado persistido (`cooldown` 12 h para rate limit; `blocked`
+  manual para challenge/checkpoint/suspensión/consentimiento/login_required).
+- `ops.py` — único punto a parchear cuando rota un `doc_id`.
 
 ## Folder structure
 ```
 src/instagram_sdk/
 ├── server.py      FastMCP entrypoint — 9 tools (8 read-only + download_media)
-├── browser.py     Singleton Playwright (lazy, idle timeout, asyncio.Lock)
-├── auth.py        storage_state + helpers de sesión + SessionExpiredError
-├── models.py      Post · MediaItem · Profile · Collection · User · Reel (dataclasses)
-├── parsers.py     extractores puros JSON-de-Instagram → dataclass
-├── scraper.py     scroll_collect() + intercept_single_response() + pacing
-├── downloader.py  descarga de bytes con httpx (puro, sin Playwright)
-└── endpoints/     _ids · saved · home · profile · post · media  (ver CLAUDE.md)
-src/config.py            loader de .env para scripts/auth_login (NO lo usa el server)
-scripts/auth_login.py    login interactivo (headed) one-time
-tests/                   unittest stdlib, fixture-driven, sin red ni navegador real
-tests/fixtures/          gql_*.json (GraphQL) · api_*.json (REST) · post_page.html
-docs/TOOLS.md            tabla exhaustiva de las 9 tools (params + endpoint reconocido)
+├── runtime.py     Runtime.run: estado → lock → contexto → cliente
+├── browser.py     BrowserManager + BrowserSession (fachada de librería)
+├── inpage.py      InPageClient (fetch en página) + clasificación de respuestas
+├── tokens.py      tokens del HTML (enmascarados en repr; nunca a logs ni disco)
+├── ops.py         registro de operaciones (doc_id, variables, raíz)
+├── guard.py       reglas de bloqueo
+├── accounts.py    cuenta + estado de bloqueo persistente
+├── pacer.py       pausas + tope por llamada
+├── cursors.py     bucle de paginación por cursor
+├── settings.py    única lectura de variables de entorno
+├── errors.py      errores tipados
+├── auth.py        storage_state, UA y Client Hints
+├── models.py · parsers.py · downloader.py
+└── endpoints/     _ids · users · saved · home · profile · post · media
+scripts/auth_login.py     login interactivo (headed) one-time
+scripts/account_state.py  ver / limpiar el estado de bloqueo (no es tool MCP)
+tests/                    unittest stdlib, fixture-driven, sin red ni navegador real
+tests/fixtures/           sintéticas/anonimizadas (gql_*, api_*, err_*, *.html)
+docs/TOOLS.md             tabla de las 9 tools y sus operaciones
 ```
 
 ## Comandos
@@ -71,7 +74,9 @@ venv/bin/python -m scripts.auth_login --username yourhandle
 # Tests — STDLIB unittest, fixture-driven, sin red
 venv/bin/python -m unittest discover tests -v
 PYTHONPATH=src venv/bin/python -m unittest discover tests       # como el CI
+RUN_BROWSER_TESTS=1 PYTHONPATH=src venv/bin/python -m unittest tests.test_browser_local  # Chromium local, sin red
 RUN_LIVE_TESTS=1 venv/bin/python -m unittest tests.test_endpoints_live  # opt-in, real
+venv/bin/python -m scripts.account_state [--clear <handle>]             # estado de bloqueo
 
 # Lint / format / typecheck — NO configurados aún en pyproject.
 # Las reglas globales piden black + isort + ruff. Propuesto:
@@ -90,18 +95,21 @@ venv/bin/python -m black --check src tests scripts
   Gitignored (`sessions/`, `*_state.json`); mantenlo así. Ver skill
   `mcp-readonly-server`.
 - **`.env`** gitignored, secretos. Sólo `.env.example` es público. No editar.
-- **Pacing de `scraper.py`** (`PRE_NAV_DELAY_RANGE_S`, `SCROLL_DELAY_RANGE_S`,
-  `MAX_SCROLLS_CAP=60`) — lento a propósito; apretarlo dispara la detección
-  anti-bot. No aflojar.
-- **No paralelices llamadas al browser** — el `asyncio.Lock` de `BrowserSession`
-  serializa por diseño; dos pestañas raspando a la vez es lo que Instagram caza.
-- **Captcha/challenge → PARA.** Baja los `limit`, prueba `BROWSER_HEADLESS=false`,
-  asume que la cuenta está marcada. Sin reintentos automáticos.
+- **Pacing de `pacer.py`** (`PRE_REQUEST_PAUSE_S`, `BETWEEN_REQUESTS_PAUSE_S`,
+  `MAX_REQUESTS_PER_CALL=20`) y topes de páginas de `cursors.py` — lento a
+  propósito; apretarlo dispara la detección anti-bot. No aflojar.
+- **No paralelices llamadas al browser** — el lock de `Runtime` serializa por
+  diseño; dos flujos de peticiones a la vez es lo que Instagram caza.
+- **Captcha/challenge → PARA.** `guard` lo convierte en `AccountBlockedError` sin
+  reintento y la cuenta queda retenida. No añadas reintentos tras una señal ni
+  una tool para desbloquear (el modelo entraría en bucle).
+- **Huella** (`auth.user_agent_override`, Client Hints) — cambiar una variable
+  cada vez para poder atribuir un bloqueo.
 - **Read-only por diseño** — no añadas tools de escritura (like, follow, post,
   comentar, DMs, stories). Fuera de scope a propósito.
 - **`tests/fixtures/*.json`** son respuestas reales de Instagram — anonimiza y
   recorta antes de commitear.
-- Catálogos de gotchas por área (lazy): `.claude/rules/anti-bot.md` (browser/scraper),
+- Catálogos de gotchas por área (lazy): `.claude/rules/anti-bot.md` (browser/inpage/pacer),
   `.claude/rules/endpoints.md` (rotación `_ids.py`/parsers), `.claude/rules/security.md`
   (sesión/`.env`/fixtures).
 
@@ -116,14 +124,12 @@ read-only o el pacing, DETENTE y consulta — no lo cambies en silencio.
 
 ## Mapa de conocimiento
 Índice de las capas lazy (se cargan solas al tocar lo que cubren):
-- `.claude/rules/anti-bot.md` (paths: browser.py/scraper.py) — serialización,
+- `.claude/rules/anti-bot.md` (paths: browser.py/inpage.py/pacer.py) — serialización,
   pacing, captcha=stop + lecciones de área.
-- `.claude/rules/endpoints.md` (paths: endpoints/**, parsers.py) — playbook de
-  rotación de friendly-names + las 3 vías de transporte + lecciones de endpoint.
+- `.claude/rules/endpoints.md` (paths: endpoints/**, parsers.py, ops.py) — playbook
+  de rotación de `doc_id` + lecciones de endpoint.
 - `.claude/rules/security.md` (paths: src/**, scripts/**, tests/fixtures/**) —
   fichero de sesión, `.env`, fixtures a anonimizar.
-- `src/instagram_sdk/endpoints/CLAUDE.md` — contrato endpoint = navegar→
-  scroll_collect→serializar (nested, lazy al tocar el subtree).
 - `docs/TOOLS.md` — tabla exhaustiva de las 9 tools + saved-privados/_resolve_own_handle.
 - Skills globales (referencia por nombre, NO duplicar):
   `mcp-readonly-server` (forma server/auth/sesión/test/captcha de los 7 MCP),
