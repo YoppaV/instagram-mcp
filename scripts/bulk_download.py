@@ -72,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     logging.basicConfig(stream=sys.stderr, level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(message)s")
+    # httpx logs every request URL at INFO: signed CDN URLs do not belong in logs.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     settings = Settings.from_env()
 
     if args.cmd == "start":
