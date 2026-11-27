@@ -64,10 +64,19 @@ class AccountBlockedError(InstagramError):
 
 
 class BudgetExceededError(InstagramError):
-    """Our own request cap was hit. Not an Instagram signal."""
+    """Our own request cap was hit. Not an Instagram signal.
 
-    def __init__(self, message: str, retry_after_s: float = 0.0) -> None:
+    Library calls that return a plain list (``fetch_saved``, ``fetch_posts``,
+    ``fetch_reels``, ``home.fetch``) raise it when the budget runs out midway,
+    with what was already read in ``partial`` (and where to resume in
+    ``next``), instead of returning a silently shorter list.
+    """
+
+    def __init__(self, message: str, retry_after_s: float = 0.0, *,
+                 partial: list | None = None, next: object = None) -> None:
         self.retry_after_s = retry_after_s
+        self.partial = partial if partial is not None else []
+        self.next = next
         super().__init__(message)
 
 
@@ -118,6 +127,12 @@ class NoSessionError(AccountError):
 
 class AmbiguousAccountError(AccountError):
     """Several sessions and nothing says which one is the default."""
+
+
+class StateUnavailableError(InstagramError):
+    """The persistent state (block state, budget, cross-process lock) can't be
+    read or written. Calls refuse to reach Instagram rather than run without
+    the protections it holds (fail closed)."""
 
 
 class AccountConfigError(AccountError):

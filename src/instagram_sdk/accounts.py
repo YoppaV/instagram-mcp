@@ -58,6 +58,7 @@ from .errors import (
     BudgetExceededError,
     NoSessionError,
     SessionExpiredError,
+    StateUnavailableError,
     UnknownAccountError,
 )
 from .guard import COOLDOWN_KINDS, SESSION_EXPIRED, BlockSignal
@@ -103,10 +104,15 @@ def normalize_handle(raw: str) -> str:
 
 
 def session_fingerprint(path: Path) -> list[Any] | None:
-    """``[path, mtime_ns]`` of a session file, ``None`` if unreadable."""
+    """``[resolved path, mtime_ns]`` of a session file, ``None`` if unreadable.
+
+    The path is resolved so the same file reached through a symlink or a
+    non-normalised path keeps the same fingerprint (and its ``blocked``).
+    """
     try:
-        return [str(path), path.stat().st_mtime_ns]
-    except OSError:
+        real = path.resolve()
+        return [str(real), real.stat().st_mtime_ns]
+    except (OSError, RuntimeError):
         return None
 
 
@@ -473,7 +479,31 @@ class AccountStateStore:
     def global_path(self) -> Path:
         return self.state_dir / "global.json"
 
+    @property
+    def degraded(self) -> bool:
+        """True if some state could only be kept in memory (a write failed)."""
+        return bool(self._unsaved)
+
+    def ensure_writable(self) -> None:
+        """Probe that ``accounts/`` and the state root accept atomic writes."""
+        for directory in (self.state_dir, self.state_dir / "accounts"):
+            try:
+                probe = directory / ".write_probe.json"
+                atomic_write_json(probe, {})
+                probe.unlink()
+            except OSError as exc:
+                raise StateUnavailableError(
+                    f"State directory {directory} is not writable ({exc}). The block "
+                    "state, request budget and cross-process lock live there, so no "
+                    "Instagram call is made. Fix its permissions or point "
+                    "INSTAGRAM_STATE_DIR elsewhere (INSTAGRAM_ALLOW_DEGRADED_STATE=1 "
+                    "runs anyway with in-memory state, at your own risk)."
+                ) from exc
+
     def _read(self, path: Path, key: str) -> dict[str, Any] | None:
+        """``None`` only when the file does not exist. Any other failure
+        raises ``StateUnavailableError``: an unreadable state must never read
+        as "no block" (fail closed)."""
         pending = self._unsaved.get(key)
         if pending is not None:
             return dict(pending)
@@ -481,10 +511,25 @@ class AccountStateStore:
             data = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return None
-        except (OSError, ValueError):
-            log.warning("instagram_sdk: unreadable state file %s; ignoring", path)
-            return None
-        return data if isinstance(data, dict) else None
+        except (OSError, ValueError) as exc:
+            raise StateUnavailableError(
+                f"State file {path} is unreadable or corrupt ({exc}); refusing to "
+                "assume the account is not blocked. Fix its permissions, or repair it "
+                "with: python -m scripts.account_state --clear <handle>"
+            ) from exc
+        if not isinstance(data, dict):
+            raise StateUnavailableError(
+                f"State file {path} does not hold a JSON object; repair it with: "
+                "python -m scripts.account_state --clear <handle>"
+            )
+        return data
+
+    def _read_or_empty(self, path: Path, key: str) -> dict[str, Any]:
+        try:
+            return self._read(path, key) or {}
+        except StateUnavailableError as exc:
+            log.error("instagram_sdk: %s — starting that file over", exc)
+            return {}
 
     def _write(self, path: Path, key: str, data: dict[str, Any]) -> None:
         """Persist ``data``; on a disk error keep it in memory and log."""
@@ -520,18 +565,32 @@ class AccountStateStore:
     def clear(self, handle: str) -> bool:
         """Reset an account to ``ok`` (and lift the global pause it caused).
 
-        True if there was something to clear.
+        The manual repair path: a corrupt state file is started over. Writes
+        raise ``OSError`` here instead of falling back to memory. True if
+        there was something to clear.
         """
-        before = self.load(handle)
-        changed = before.get("status") != STATUS_OK or bool(before.get("failures"))
-        self.save(handle, {**before, "status": STATUS_OK, "block": None, "failures": []})
-        glob = self.load_global()
+        key = handle.casefold()
+        path = self._path(handle)
+        try:
+            before = self._read(path, key) or {}
+            changed = (before.get("status", STATUS_OK) != STATUS_OK
+                       or bool(before.get("failures")))
+        except StateUnavailableError:
+            before, changed = {}, True
+        atomic_write_json(path, {**before, "status": STATUS_OK, "block": None, "failures": []})
+        self._unsaved.pop(key, None)
+        try:
+            glob = self._read(self.global_path, "\0global") or {}
+        except StateUnavailableError:
+            glob, changed = {}, True
+            atomic_write_json(self.global_path, glob)
         src = str(glob.get("global_cooldown_source") or "")
-        if src.casefold() == handle.casefold() and glob.get("global_cooldown_until"):
+        if src.casefold() == key and glob.get("global_cooldown_until"):
             glob["global_cooldown_until"] = None
             glob["global_cooldown_source"] = None
-            self.save_global(glob)
+            atomic_write_json(self.global_path, glob)
             changed = True
+        self._unsaved.pop("\0global", None)
         return changed
 
     # ------------------------------------------------------------------
@@ -591,10 +650,12 @@ class AccountStateStore:
     def record(self, account: Account, signal: BlockSignal) -> Exception:
         """Persist ``signal`` and return the error to raise for it."""
         now = self._clock()
-        data = self.load(account.handle)
+        data = self._read_or_empty(self._path(account.handle), account.key)
+        data.setdefault("status", STATUS_OK)
         history = [h for h in (data.get("history") or []) if isinstance(h, dict)]
         fp = session_fingerprint(account.session_path)
         block: dict[str, Any] = {
+            "user_id": account.user_id,
             "kind": signal.kind,
             "detail": signal.detail,
             "at": now,
@@ -633,7 +694,7 @@ class AccountStateStore:
         self.save(account.handle, {**data, "status": status, "block": block,
                                    "history": history[-20:], "failures": []})
         if signal.kind != SESSION_EXPIRED:
-            glob = self.load_global()
+            glob = self._read_or_empty(self.global_path, "\0global")
             glob["global_cooldown_until"] = now + GLOBAL_COOLDOWN_S
             glob["global_cooldown_source"] = account.handle
             self.save_global(glob)
@@ -693,7 +754,11 @@ class AccountStateStore:
             self.save_global(glob)
 
     def summary(self, account: Account) -> dict[str, Any]:
-        data = self.effective(account)
+        try:
+            data = self.effective(account)
+        except StateUnavailableError as exc:
+            return {"state": "unknown",
+                    "block": {"kind": "state_unavailable", "detail": str(exc), "until": None}}
         block = data.get("block")
         if block:
             block = {k: v for k, v in block.items() if k != "session_fp"}

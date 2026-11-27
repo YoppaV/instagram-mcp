@@ -38,6 +38,7 @@ from .endpoints.users import UserIdCache
 from .errors import (
     OperationFailedError,
     SessionExpiredError,
+    StateUnavailableError,
 )
 from .guard import BlockSignal
 from .inpage import InPageClient
@@ -71,6 +72,7 @@ class Runtime:
         self._lock = asyncio.Lock()
         self._file_lock = FileLock(settings.state_dir / "nav.lock")
         self._file_lock_warned = False
+        self._state_probed = False
         self.browser = browser or BrowserManager(
             settings, lock=self._lock, max_requests_per_call=max_requests_per_call
         )
@@ -94,11 +96,21 @@ class Runtime:
         try:
             got = await self._file_lock.acquire(max(0.0, deadline - time.monotonic()))
         except OSError as exc:
-            # State dir unusable (read-only volume...): the process lock still
-            # serializes this server; say so once and carry on.
+            # State dir unusable (read-only volume...): without the file lock
+            # another process could drive Instagram at the same time, so the
+            # call is refused unless the owner opted in explicitly.
+            if not self.settings.allow_degraded_state:
+                self._lock.release()
+                raise StateUnavailableError(
+                    f"Cross-process lock {self._file_lock.path} unavailable ({exc}); no "
+                    "Instagram call is made. Fix INSTAGRAM_STATE_DIR's permissions "
+                    "(INSTAGRAM_ALLOW_DEGRADED_STATE=1 runs anyway, serialized only "
+                    "within this process)."
+                ) from exc
             if not self._file_lock_warned:
                 log.error("instagram_sdk: cross-process lock unavailable (%s); "
-                          "only this process is serialized", exc)
+                          "INSTAGRAM_ALLOW_DEGRADED_STATE=1, only this process is "
+                          "serialized", exc)
                 self._file_lock_warned = True
             return
         except BaseException:
@@ -118,9 +130,30 @@ class Runtime:
         finally:
             self._lock.release()
 
+    def _check_state_usable(self) -> None:
+        """Fail closed when the state can't be persisted (unless opted in)."""
+        if self.settings.allow_degraded_state:
+            return
+        if not self._state_probed:
+            self.state.ensure_writable()
+            self._state_probed = True
+        if self.state.degraded:
+            raise StateUnavailableError(
+                f"Writing the state under {self.settings.state_dir} failed earlier; the "
+                "block state and budget are only in memory, so no Instagram call is "
+                "made. Fix the directory (INSTAGRAM_ALLOW_DEGRADED_STATE=1 runs anyway)."
+            )
+
     @asynccontextmanager
-    async def session(self, account: str | None) -> AsyncIterator[InPageClient]:
-        """Hold the global lock and yield a client for one logical call."""
+    async def session(
+        self, account: str | None, *, carried_requests: int = 0,
+        usage: dict[str, int] | None = None,
+    ) -> AsyncIterator[InPageClient]:
+        """Hold the global lock and yield a client for one logical call.
+
+        ``carried_requests`` keeps the per-call cap across the one retry after
+        a Chromium crash; ``usage["requests"]`` reports this attempt's count.
+        """
         acct = self.resolve(account)
         if not acct.session_path.exists():
             raise SessionExpiredError(
@@ -133,6 +166,7 @@ class Runtime:
             # Again under the lock: a call queued behind one that just got
             # blocked (here or in another process) must not hit Instagram.
             self.state.check(acct)
+            self._check_state_usable()
             actx = await self.browser.context_for(acct)
             last = self.state.load_global().get("last_account")
             if last and last != acct.key:
@@ -153,6 +187,7 @@ class Runtime:
 
             client = InPageClient(actx, on_block=on_block, user_ids=self.user_ids)
             client.new_call()
+            actx.pacer.requests_this_call = carried_requests
             actx.pacer.budget = budget
             failed: OperationFailedError | None = None
             try:
@@ -163,7 +198,9 @@ class Runtime:
             finally:
                 pacer = actx.pacer
                 pacer.budget = None
-                made = pacer.requests_this_call > 0
+                if usage is not None:
+                    usage["requests"] = pacer.requests_this_call
+                made = pacer.requests_this_call > carried_requests
                 try:
                     self.state.save_usage(acct, budget if made else None,
                                           pacer.last_request_wall if made else None)
@@ -182,9 +219,13 @@ class Runtime:
     async def run(self, account: str | None, fn: Callable[[InPageClient], Awaitable[T]]) -> T:
         from .errors import BrowserUnavailableError
 
+        usage = {"requests": 0}
         for attempt in range(2):
             try:
-                async with self.session(account) as client:
+                # The retry keeps the per-call cap: requests already made by
+                # the first attempt still count.
+                async with self.session(account, carried_requests=usage["requests"],
+                                        usage=usage) as client:
                     return await fn(client)
             except BrowserUnavailableError as exc:
                 if not exc.retryable or attempt == 1:

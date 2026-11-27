@@ -11,7 +11,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..cursors import MAX_PAGES_PER_CALL, CursorState, PageResult, page_budget, paginate
+from ..cursors import (
+    MAX_PAGES_PER_CALL,
+    CursorState,
+    PageResult,
+    items_or_raise,
+    page_budget,
+    paginate,
+)
 from ..models import Post
 from ..parsers import TIMELINE_CONNECTION_KEY, connection_cursor, find_embedded, home_posts
 
@@ -58,4 +65,4 @@ async def fetch_home_page(
 async def fetch(ig: Any, *, limit: int | None = None) -> list[Post]:
     """Read the home timeline. Sponsored and suggested items are dropped."""
     page = await fetch_home_page(ig, limit=limit, max_pages=page_budget(limit, HOME_PAGE_SIZE))
-    return page.items
+    return items_or_raise(page)

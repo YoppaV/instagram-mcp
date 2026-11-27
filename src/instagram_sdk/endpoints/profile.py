@@ -15,7 +15,14 @@ import time
 from dataclasses import replace
 from typing import Any, Iterable
 
-from ..cursors import MAX_PAGES_PER_CALL, CursorState, PageResult, page_budget, paginate
+from ..cursors import (
+    MAX_PAGES_PER_CALL,
+    CursorState,
+    PageResult,
+    items_or_raise,
+    page_budget,
+    paginate,
+)
 from ..errors import AccountBlockedError, SessionExpiredError
 from ..models import Post, Profile, Reel
 from ..parsers import connection_cursor, connection_posts, connection_reels, parse_profile
@@ -103,7 +110,7 @@ async def fetch_posts(
         include_reels=include_reels,
         max_pages=page_budget(limit, GRID_PER_PAGE),
     )
-    return page.items
+    return items_or_raise(page)
 
 
 async def _with_reel_play_counts(ig: Any, handle: str, posts: list[Post]) -> list[Post]:
@@ -127,6 +134,21 @@ async def _with_reel_play_counts(ig: Any, handle: str, posts: list[Post]) -> lis
         replace(p, view_count=counts[p.shortcode]) if p.shortcode in counts else p
         for p in posts
     ]
+
+
+def _plays_walked(ig: Any, user_id: str) -> bool:
+    """True if this author's Reels tab was already walked within the TTL."""
+    cache = getattr(ig, "cache", None)
+    if not isinstance(cache, dict):
+        return False
+    at = cache.setdefault("plays_walked", {}).get(user_id)
+    return at is not None and time.monotonic() - at <= PLAYS_TTL_S
+
+
+def _mark_walked(ig: Any, user_id: str) -> None:
+    cache = getattr(ig, "cache", None)
+    if isinstance(cache, dict):
+        cache.setdefault("plays_walked", {})[user_id] = time.monotonic()
 
 
 def _plays_cache(ig: Any, user_id: str) -> dict[str, int]:
@@ -166,8 +188,12 @@ async def reel_play_counts(
             return {}
         plays = _plays_cache(ig, pk)
         found = {code: plays[code] for code in wanted if code in plays}
-        if len(found) == len(wanted):
+        if len(found) == len(wanted) or _plays_walked(ig, pk):
+            # Everything cached, or the tab was already walked recently: a reel
+            # older than the pages we read would cost the same pages again
+            # for nothing (hydrating 60 reels must not walk it 60 times).
             return found
+        _mark_walked(ig, pk)
         after: str | None = None
         for page_no in range(1 + max(0, max_scrolls)):
             if page_no == 0:
@@ -212,7 +238,14 @@ async def fetch_reels_page(
             conn = await ig.graphql(
                 "profile_reels_page", id=pk, after=upstream, first=REELS_PAGE_SIZE
             )
-        return connection_reels(conn), connection_cursor(conn)
+        reels = connection_reels(conn)
+        # Remember the play counts: hydrating these reels afterwards with
+        # post.fetch (what social-ingest does) then costs no extra pages.
+        plays = _plays_cache(ig, pk)
+        for reel in reels:
+            if reel.play_count is not None:
+                plays[reel.shortcode] = reel.play_count
+        return reels, connection_cursor(conn)
 
     return await paginate(
         fetch_page,
@@ -228,4 +261,4 @@ async def fetch_reels(ig: Any, *, username: str, limit: int | None = None) -> li
     page = await fetch_reels_page(
         ig, username=username, limit=limit, max_pages=page_budget(limit, REELS_PAGE_SIZE)
     )
-    return page.items
+    return items_or_raise(page)

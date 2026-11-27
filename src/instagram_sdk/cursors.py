@@ -48,6 +48,28 @@ class PageResult(Generic[T]):
     items: list[T] = field(default_factory=list)
     next: CursorState | None = None
     stopped: str = STOP_END
+    # The budget error that ended the walk early (``stopped == "budget"``).
+    error: BudgetExceededError | None = field(default=None, repr=False, compare=False)
+
+
+def items_or_raise(page: "PageResult[T]") -> list[T]:
+    """Items of a library (list-returning) call; never a silently short list.
+
+    A walk the budget cut midway raises ``BudgetExceededError`` carrying the
+    items read so far in ``partial`` and the resume point in ``next``. Tools
+    use the ``PageResult`` directly and return the partial page + cursor.
+    """
+    if page.stopped == STOP_BUDGET:
+        cause = page.error
+        err = BudgetExceededError(
+            (str(cause) if cause else "request budget reached")
+            + f" (after {len(page.items)} items; they are in .partial)",
+            retry_after_s=cause.retry_after_s if cause else 0.0,
+            partial=list(page.items),
+            next=page.next,
+        )
+        raise err from cause
+    return page.items
 
 
 FetchPage = Callable[[Any], Awaitable[tuple[list[T], Any]]]
@@ -89,10 +111,10 @@ async def paginate(
     while True:
         try:
             raw, nxt = await fetch_page(state.upstream)
-        except BudgetExceededError:
+        except BudgetExceededError as exc:
             if pages == 0:
                 raise
-            return PageResult(out, state, STOP_BUDGET)
+            return PageResult(out, state, STOP_BUDGET, error=exc)
         pages += 1
         new_keys = 0
         for i, item in enumerate(raw):

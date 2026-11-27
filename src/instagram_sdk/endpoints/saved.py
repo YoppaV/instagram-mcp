@@ -16,6 +16,7 @@ from ..cursors import (
     MAX_PAGES_PER_CALL,
     CursorState,
     PageResult,
+    items_or_raise,
     page_budget,
     paginate,
 )
@@ -106,7 +107,7 @@ async def fetch_saved(
         limit=limit,
         max_pages=page_budget(limit, per_page),
     )
-    return page.items
+    return items_or_raise(page)
 
 
 async def fetch_collections(ig: Any, *, handle: str | None = None) -> list[Collection]:
