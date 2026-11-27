@@ -21,6 +21,11 @@ _FB_DTSG = (
 )
 _LSD = re.compile(r'"LSD",\[\],\{"token":"([^"]+)"')
 _ACTOR_ID = re.compile(r'"actorID":"(\d+)"')
+# The signed-in account's Instagram pk. NOT ``actorID``: on instagram.com that
+# is the 17-digit ``17841…`` Facebook-side id (also in ``userID``/``fbid``),
+# which REST paths like /friendships/<pk>/ do not accept. Verified on a real
+# page (Nov 2026): ``appScopedIdentity`` equals the ``ds_user_id`` pk.
+_VIEWER_PK = re.compile(r'"appScopedIdentity"\s*:\s*"?(\d{3,})')
 _CSRF = re.compile(r'"csrf_token":"([^"]+)"')
 _REVISION = re.compile(r'"client_revision":(\d+)')
 _APP_ID = re.compile(r'"X-IG-App-ID":"(\d+)"')
@@ -40,6 +45,7 @@ class Tokens:
     csrf_html: str | None = None
     client_revision: str | None = None
     app_id: str = DEFAULT_APP_ID
+    viewer_pk: str | None = None
     obtained_at: float = field(default_factory=time.monotonic)
 
     @property
@@ -88,6 +94,7 @@ def extract_tokens(html: str) -> Tokens:
         csrf_html=_first(_CSRF, html),
         client_revision=_first(_REVISION, html),
         app_id=_first(_APP_ID, html) or DEFAULT_APP_ID,
+        viewer_pk=_first(_VIEWER_PK, html),
     )
 
 

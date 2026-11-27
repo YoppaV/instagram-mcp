@@ -201,19 +201,25 @@ class InPageClient:
         return {c.get("name", ""): c.get("value", "") for c in jar}
 
     async def viewer_id(self) -> str | None:
-        """The logged-in account's numeric id.
+        """The logged-in account's Instagram pk (what REST paths take).
 
-        From the page's ``actorID`` (loading the page if needed); the
-        ``ds_user_id`` cookie is only a fallback, because it can expire long
-        before the session does.
+        In order: ``appScopedIdentity`` from the page HTML (loading the page
+        if needed); the live ``ds_user_id`` cookie; the id recorded in the
+        session file / sidecar (a pk never changes, even once that cookie has
+        expired and the browser dropped it). Never ``actorID``: that is the
+        Facebook-side ``17841…`` id, not the pk.
         """
         tokens = self._actx.tokens
-        if tokens is None or not _is_user_id(tokens.actor_id):
+        if tokens is None or not _is_user_id(tokens.viewer_pk):
             await self.bootstrap()
             tokens = self._actx.tokens
-        if tokens is not None and _is_user_id(tokens.actor_id):
-            return tokens.actor_id
-        return (await self.cookies()).get("ds_user_id") or None
+        if tokens is not None and _is_user_id(tokens.viewer_pk):
+            return tokens.viewer_pk
+        live = (await self.cookies()).get("ds_user_id")
+        if _is_user_id(live):
+            return live
+        fallback = self._actx.user_id
+        return fallback if _is_user_id(fallback) else None
 
     def recent_html(self, path: str, max_age_s: float) -> str | None:
         last = self._actx.last_html

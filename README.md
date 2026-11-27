@@ -415,7 +415,8 @@ every instagram.com request locally (`RUN_BROWSER_TESTS=1`), and
   `venv/bin/python -m scripts.account_state --clear <handle>`.
 - **`auth_status` shows `expired_cookies: ["ds_user_id"]`** — harmless:
   that cookie can expire months before the session. Only a live `sessionid`
-  is required; the account id comes from the page (`actorID`).
+  is required; the account's pk comes from the page (`appScopedIdentity`,
+  not `actorID`, which is a Facebook-side id).
 - **`AmbiguousAccountError`** — several accounts are logged in and none is
   the default: pass `account` or set `INSTAGRAM_DEFAULT_ACCOUNT`.
 - **`UnknownAccountError`** — the `account` (or `INSTAGRAM_DEFAULT_ACCOUNT`)

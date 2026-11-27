@@ -144,6 +144,7 @@ class MultiAccountRuntimeTests(_Base):
         self.assertEqual(kwargs["timezone_id"], "Europe/Madrid")
         self.assertEqual(kwargs["viewport"], {"width": 1366, "height": 768})
         self.assertTrue(kwargs["storage_state"].endswith("dave_instagram_state.json"))
+        self.assertEqual(runtime.browser.contexts()["dave"].user_id, "9")  # viewer_id fallback
 
     def test_budget_is_persisted_and_enforced_across_runtimes(self) -> None:
         settings = replace(self.settings, max_requests_per_hour=3)

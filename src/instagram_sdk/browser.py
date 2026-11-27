@@ -108,6 +108,9 @@ class AccountContext:
     last_html: tuple[str, str, float] | None = None
     dead: bool = False
     cdp: Any = None
+    # The account's pk as recorded in its session file / sidecar (fallback
+    # for ``InPageClient.viewer_id``).
+    user_id: str | None = None
 
     def alive(self) -> bool:
         if self.dead:
@@ -288,6 +291,7 @@ class BrowserManager:
             session_fp=fp,
             pacer=Pacer(max_requests_per_call=self._max_requests_per_call),
             cdp=cdp,
+            user_id=account.user_id,
         )
         for event, target in (("crash", page), ("close", page), ("close", context)):
             try:

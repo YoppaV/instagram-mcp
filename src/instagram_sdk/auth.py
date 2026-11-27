@@ -6,7 +6,8 @@ it into a browser context on every tool call. A live (present, unexpired)
 ``sessionid`` is our best-effort "authenticated" signal. ``ds_user_id`` is
 set at login too but can expire months before the session does (seen: expired
 in August on a session that still works in November), so it is not required;
-the account's own id comes from the page's ``actorID`` instead.
+the account's own pk comes from the page's ``appScopedIdentity`` instead
+(``actorID`` is the Facebook-side ``17841…`` id, not the pk).
 """
 
 from __future__ import annotations

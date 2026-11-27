@@ -66,8 +66,10 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
 - **Estado en cerrado**: un fichero de estado ilegible o corrupto, o un
   `INSTAGRAM_STATE_DIR` no escribible, dan `StateUnavailableError` sin red (salvo
   `INSTAGRAM_ALLOW_DEGRADED_STATE=1`).
-- **Id propio**: sale del `actorID` del HTML; la cookie `ds_user_id` puede caducar
-  meses antes que la sesión y solo es respaldo. `auth_status` exige solo un
+- **Id propio** (`viewer_id()`): sale de `appScopedIdentity` en el HTML; respaldo,
+  la cookie `ds_user_id` viva y luego el id guardado en la sesión/sidecar. **No**
+  `actorID`: en instagram.com es el id `17841…` del lado Facebook, no el pk. La
+  cookie `ds_user_id` puede caducar meses antes que la sesión. `auth_status` exige solo un
   `sessionid` vigente.
 - **`download_media`** re-fetchea el post fresco antes de descargar porque las URLs
   del CDN de Instagram son firmadas y efímeras; escribe vía temporal + rename en

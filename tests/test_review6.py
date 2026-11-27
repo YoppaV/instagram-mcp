@@ -242,26 +242,37 @@ class OwnIdWithoutDsUserIdTests(unittest.TestCase):
     """5. ds_user_id can expire while the session works: the own id comes
     from the page's actorID, and auth_status only needs a live sessionid."""
 
-    def test_viewer_id_from_actor_id_not_the_cookie(self) -> None:
+    def test_viewer_id_is_the_pk_from_the_page_not_actor_id(self) -> None:
         from test_inpage import _client
 
         from _fakes import FakeContext
 
-        client, page, _ = _client([])
-        # Session cookie set, ds_user_id gone (expired) — or stale.
+        # Real shape (Nov 2026): actorID/userID are the 17841… Facebook-side
+        # id; appScopedIdentity is the Instagram pk.
+        html = text("html_tokens.html").replace(
+            "</body>", '<script>{"appScopedIdentity":"1234567890"}</script></body>')
+        client, page, _ = _client([], html=html)
+        # ds_user_id expired and dropped by the browser — or stale.
         for cookies in ({"sessionid": "S", "csrftoken": "C"},
                         {"sessionid": "S", "csrftoken": "C", "ds_user_id": "111"}):
             with self.subTest(cookies=sorted(cookies)):
                 client._actx.context = FakeContext(cookies)
                 client._actx.tokens = None
                 client._actx.last_html = None
-                self.assertEqual(_run(client.viewer_id()), "17841400000000001")
+                self.assertEqual(_run(client.viewer_id()), "1234567890")
 
-    def test_cookie_is_the_fallback(self) -> None:
+    def test_never_actor_id_and_fallbacks(self) -> None:
         from test_inpage import _client
 
-        client, page, _ = _client([], html="<html>no tokens</html>")
-        self.assertEqual(_run(client.viewer_id()), "999")  # FakeContext's ds_user_id
+        from _fakes import FakeContext
+
+        client, page, _ = _client([])  # page has actorID but no appScopedIdentity
+        self.assertEqual(_run(client.viewer_id()), "999")  # live cookie
+        client._actx.context = FakeContext({"sessionid": "S", "csrftoken": "C"})
+        client._actx.user_id = "42"  # from the session file / sidecar
+        self.assertEqual(_run(client.viewer_id()), "42")
+        client._actx.user_id = None
+        self.assertIsNone(_run(client.viewer_id()))  # not 17841400000000001
 
     def test_auth_status_with_expired_ds_user_id(self) -> None:
         import time
