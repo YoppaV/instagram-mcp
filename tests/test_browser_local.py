@@ -46,7 +46,9 @@ class LocalBrowserTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         self.dir = Path(tmp.name)
         self.session = self.dir / "local_instagram_state.json"
-        self.session.write_text(json.dumps({"cookies": [], "origins": []}))
+        fake = {"name": "sessionid", "value": "FAKE", "domain": ".instagram.com", "path": "/",
+                "expires": -1, "httpOnly": True, "secure": True, "sameSite": "Lax"}
+        self.session.write_text(json.dumps({"cookies": [fake], "origins": []}))
         self.settings = replace(
             Settings.from_env(), state_dir=self.dir / "state", idle_timeout_s=0,
             headless=True, locale="es-ES",

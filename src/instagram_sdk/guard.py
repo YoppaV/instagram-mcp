@@ -21,6 +21,7 @@ WAIT_PHRASES: tuple[str, ...] = (
     "try again later",
     "please wait a few minutes",
     "rate limit",
+    "temporarily blocked",
 )
 TEXT_HEAD_CHARS = 2000
 
@@ -46,7 +47,8 @@ class BlockSignal:
 
 def _messages(body: dict[str, Any]) -> list[str]:
     out: list[str] = []
-    for key in ("message", "feedback_message"):
+    # errorSummary/errorDescription: Facebook's error envelope ("for (;;);{...}").
+    for key in ("message", "feedback_message", "errorSummary", "errorDescription"):
         value = body.get(key)
         if isinstance(value, str):
             out.append(value)
@@ -96,10 +98,28 @@ def _check_url(final_url: str) -> BlockSignal | None:
     return None
 
 
-def check_navigation(final_url: str, status: int | None) -> BlockSignal | None:
-    """Signal for a page navigation (``page.url`` after ``goto``)."""
+def check_navigation(
+    final_url: str,
+    status: int | None,
+    *,
+    body: dict[str, Any] | None = None,
+    text_head: str = "",
+) -> BlockSignal | None:
+    """Signal for a page navigation (``page.url`` after ``goto``).
+
+    ``body``/``text_head`` are only given for error statuses: an HTML page
+    that loaded fine is never scanned for phrases.
+    """
     if status == 429:
         return BlockSignal("rate_limited", "HTTP 429")
+    if isinstance(body, dict):
+        signal = _check_body(body)
+        if signal is not None:
+            return signal
+    elif text_head:
+        found = _wait_phrase([text_head[:TEXT_HEAD_CHARS]])
+        if found:
+            return BlockSignal("rate_limited", "wait phrase in HTML")
     return _check_url(final_url)
 
 

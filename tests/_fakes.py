@@ -105,8 +105,12 @@ class FakeCDP:
 
 
 class FakeResponse:
-    def __init__(self, status: int = 200) -> None:
+    def __init__(self, status: int = 200, body: str = "") -> None:
         self.status = status
+        self._body = body
+
+    async def text(self) -> str:
+        return self._body
 
 
 class FakePage:
@@ -121,6 +125,7 @@ class FakePage:
         self.html = html
         self._nav_url = nav_url
         self.nav_status = 200
+        self.nav_body = ""
         self.closed = False
 
     async def evaluate(self, script: str, arg: Any = None) -> Any:
@@ -135,7 +140,7 @@ class FakePage:
     async def goto(self, url: str, **_: Any) -> FakeResponse:
         self.gotos.append(url)
         self.url = self._nav_url(url) if self._nav_url else url
-        return FakeResponse(self.nav_status)
+        return FakeResponse(self.nav_status, self.nav_body)
 
     async def content(self) -> str:
         return self.html
@@ -146,8 +151,9 @@ class FakePage:
 
 class FakeContext:
     def __init__(self, cookies: dict[str, str] | None = None) -> None:
-        self._cookies = cookies or {"csrftoken": "CSRF_COOKIE", "ig_did": "DID-1",
-                                    "ds_user_id": "999"}
+        self._cookies = cookies if cookies is not None else {
+            "csrftoken": "CSRF_COOKIE", "ig_did": "DID-1", "ds_user_id": "999",
+            "sessionid": "SESSION"}
 
     async def cookies(self, *_: Any) -> list[dict[str, str]]:
         return [{"name": k, "value": v} for k, v in self._cookies.items()]

@@ -9,6 +9,7 @@ so library callers keep working.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from ..cursors import (
@@ -23,6 +24,7 @@ from ..models import Collection, Post
 from ..parsers import connection_collections, connection_cursor, connection_posts, extract_saved, rest_cursor
 
 ALL_MEDIA_COLLECTION_ID = "ALL_MEDIA_AUTO_COLLECTION"
+_COLLECTION_ID_RE = re.compile(r"^\d{1,30}$")
 SAVED_PER_PAGE = 21
 COLLECTION_PER_PAGE = 12
 MAX_COLLECTION_LIST_PAGES = 5
@@ -45,6 +47,11 @@ async def fetch_saved_page(
 
     else:
         cid = str(collection_id).strip()
+        if not _COLLECTION_ID_RE.match(cid):
+            raise ValueError(
+                f"Invalid collection_id {collection_id!r}: use a numeric id from "
+                "get_saved_collections (or ALL_MEDIA_AUTO_COLLECTION)."
+            )
         # REST collection feed first: it still answers and, unlike the GraphQL
         # page the web uses now, carries video_versions and taken_at (D3/R3).
         # If it is gone or refuses the id, the walk switches to GraphQL; the

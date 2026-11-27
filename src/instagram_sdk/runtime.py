@@ -95,12 +95,18 @@ class Runtime:
         self.state.check(acct)
         await self._acquire()
         try:
+            # Again under the lock: a call queued behind one that just got
+            # blocked must not hit Instagram (nor add a strike).
+            self.state.check(acct)
             actx = await self.browser.context_for(acct)
 
             async def on_block(signal: BlockSignal) -> Exception:
-                error = self.state.record(acct, signal)
-                await self.browser.close_account(acct.handle)
-                return error
+                try:
+                    # Never raises: if the disk write fails the block stays
+                    # in memory for this process.
+                    return self.state.record(acct, signal)
+                finally:
+                    await self.browser.close_account(acct.handle)
 
             client = InPageClient(actx, on_block=on_block, user_ids=self.user_ids)
             client.new_call()

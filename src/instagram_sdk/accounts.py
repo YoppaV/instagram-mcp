@@ -106,11 +106,17 @@ class AccountStateStore:
     def __init__(self, state_dir: Path, *, clock: Callable[[], float] = time.time) -> None:
         self.state_dir = state_dir
         self._clock = clock
+        # States that could not be written (read-only volume...). They win
+        # over the disk until a write succeeds, so a block always applies.
+        self._unsaved: dict[str, dict[str, Any]] = {}
 
     def _path(self, handle: str) -> Path:
         return self.state_dir / "accounts" / f"{handle.casefold()}.json"
 
     def load(self, handle: str) -> dict[str, Any]:
+        pending = self._unsaved.get(handle.casefold())
+        if pending is not None:
+            return dict(pending)
         path = self._path(handle)
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
@@ -126,7 +132,16 @@ class AccountStateStore:
         return data
 
     def save(self, handle: str, data: dict[str, Any]) -> None:
-        _atomic_write_json(self._path(handle), data)
+        """Persist ``data``; on a disk error keep it in memory and log."""
+        key = handle.casefold()
+        try:
+            _atomic_write_json(self._path(handle), data)
+        except OSError as exc:
+            self._unsaved[key] = dict(data)
+            log.error("instagram_sdk: could not write account state for %s (%s); "
+                      "keeping it in memory for this process", handle, exc)
+            return
+        self._unsaved.pop(key, None)
 
     def clear(self, handle: str) -> bool:
         """Reset an account to ``ok``. True if there was something to clear."""

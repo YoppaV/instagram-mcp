@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 from urllib.parse import urlencode
@@ -75,6 +76,9 @@ TOKEN = "token"
 STALE = "stale"
 TRANSIT = "transit"
 SESSION = "session"
+
+# REST path parameters are ids; anything else could rewrite the path.
+_SAFE_PATH_PARAM = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 
 OnBlock = Callable[[guard.BlockSignal], Awaitable[Exception]]
 
@@ -133,7 +137,9 @@ def classify_graphql(status: int, body: Any, op: ops.GraphQLOp) -> tuple[str, An
             if value is _ABSENT:
                 continue
             if value is None:
-                if op.nullable_root and body.get("data") is not None:
+                errors = body.get("errors")
+                # A null root is "does not exist" only when nothing failed.
+                if op.nullable_root and body.get("data") is not None and not errors:
                     return NULL, None
                 continue
             if status == 200:
@@ -211,13 +217,25 @@ class InPageClient:
     async def bootstrap(self, *, force: bool = False) -> None:
         """Make sure a document is loaded and tokens are fresh."""
         tokens = self._actx.tokens
-        loaded = self._actx.last_html is not None
+        loaded = self._actx.last_html is not None and not self._on_error_page()
         if not force and loaded and tokens is not None and tokens.age_s() < TOKEN_MAX_AGE_S:
             return
         if not force and loaded and tokens is None:
             # A document is loaded but carried no tokens; REST still works.
             return
         await self.navigate_html("/")
+
+    def _on_error_page(self) -> bool:
+        try:
+            return str(self._actx.page.url or "").startswith("chrome-error://")
+        except Exception:
+            return True
+
+    async def _logged_out(self, tokens: Tokens | None) -> bool:
+        """The login page can come back as a 200 with no redirect."""
+        if tokens is not None and tokens.actor_id == "0":
+            return True
+        return not (await self.cookies()).get("sessionid")
 
     async def navigate_html(self, path: str) -> str:
         """Load ``path`` in the fixed tab and return its HTML (one request)."""
@@ -227,6 +245,7 @@ class InPageClient:
             response = await page.goto(BASE + path, wait_until="domcontentloaded",
                                        timeout=NAV_TIMEOUT_MS)
         except Exception as exc:
+            self._actx.last_html = None  # the tab may now sit on chrome-error://
             err = self._browser_error(exc)
             if isinstance(err, BrowserUnavailableError):
                 raise err from exc
@@ -236,14 +255,30 @@ class InPageClient:
             status = response.status if response is not None else None
         except Exception:
             status = None
-        signal = guard.check_navigation(page.url, status)
+        body: Any = None
+        raw = ""
+        if status is not None and status >= 400 and status != 404:
+            try:
+                raw = await response.text()
+            except Exception:
+                raw = ""
+            body = parse_body(raw)
+        signal = guard.check_navigation(
+            page.url, status, body=body if isinstance(body, dict) else None,
+            text_head=raw[: guard.TEXT_HEAD_CHARS],
+        )
         if signal is not None:
             await self._block(signal)
+        if status is not None and status >= 400 and status != 404:
+            self._actx.last_html = None
+            raise OperationFailedError("navigate", f"{path}: HTTP {status}")
         try:
             html = await page.content()
         except Exception as exc:
             raise self._browser_error(exc) from exc
         fresh = try_extract_tokens(html)
+        if await self._logged_out(fresh):
+            await self._block(guard.BlockSignal(guard.SESSION_EXPIRED, "logged-out page"))
         if fresh is not None:
             self._actx.tokens = fresh
         self._actx.last_html = (path, html, time.monotonic())
@@ -298,6 +333,9 @@ class InPageClient:
         if not isinstance(op, ops.RestOp):
             raise TypeError(f"{op_name!r} is not a REST operation")
         await self.bootstrap()
+        for key, value in (path_params or {}).items():
+            if not _SAFE_PATH_PARAM.match(str(value)):
+                raise ValueError(f"unsafe value for path parameter {key!r}: {value!r}")
         path = op.path.format(**(path_params or {}))
         params = {**dict(op.query), **{k: v for k, v in (query or {}).items() if v is not None}}
         url = path + ("?" + urlencode(params) if params else "")
