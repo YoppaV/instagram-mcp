@@ -507,6 +507,113 @@ async def download_media(
     return [*images, _serialize(result)]
 
 
+# --------------------------------------------------------------------------
+# Comments and search
+# --------------------------------------------------------------------------
+# Imported here, not at the top, to keep this section self-contained.
+from instagram_sdk.endpoints import comments, search  # noqa: E402
+
+# Search has a small budget of its own: few pages per call.
+SEARCH_MAX_LIMIT = 50
+
+
+@mcp.tool()
+async def get_post_comments(
+    id_or_url: str,
+    limit: int = 20,
+    cursor: str | None = None,
+    include_replies: bool = False,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Read a post's comments (top-level, in Instagram's "popular" order).
+
+    Returns ``{items, next_cursor, stopped}`` (see `get_saved_posts`). Each
+    comment has ``pk``, ``text``, ``created_at`` (unix seconds),
+    ``like_count``, ``reply_count``, ``is_pinned``, ``is_edited`` and
+    ``author``. The first page brings 15 comments, then 10 per request.
+
+    With ``include_replies`` the first replies are attached as ``replies``,
+    but only for the first 3 comments that have any, 5 replies each (one
+    extra request per thread). ``replies`` is ``[]`` for a comment with no
+    replies and null when they were not fetched; ``reply_count`` is always
+    the full number. Comments count in a separate, smaller budget.
+
+    Args:
+        id_or_url: The post shortcode, a post/reel URL, or its numeric media id.
+        limit: Max comments to return (default 20, capped at 50).
+        cursor: ``next_cursor`` from a previous call, to continue (with or
+            without ``include_replies``).
+        include_replies: Attach a small sample of replies (see above).
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
+    """
+    media_id = comments.media_id_of(id_or_url)
+    return await _paged(
+        "get_post_comments", account, cursor,
+        # include_replies does not change which comments come: not in the query.
+        {"media_id": media_id},
+        lambda ig, start: comments.fetch_comments_page(
+            ig, id_or_url=media_id, limit=_clamp_limit(limit),
+            include_replies=bool(include_replies), start=start,
+            max_pages=MAX_PAGES_PER_CALL,
+        ),
+    )
+
+
+@mcp.tool()
+async def search_users(query: str, limit: int = 10, account: str | None = None) -> list[dict[str, Any]]:
+    """Search accounts by name or username (Instagram's search box).
+
+    One request. Returns users in Instagram's ranking, each with ``pk``,
+    ``username``, ``full_name``, ``is_verified`` and ``profile_pic_url``
+    (``is_private`` is not in this result; it reads false). Search has its
+    own small budget: avoid firing many searches in a row.
+
+    Args:
+        query: Free text, e.g. "national geographic" or "natgeo".
+        limit: Max users to return (default 10, capped at 50).
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
+    """
+    text = search.normalize_query(query)
+    lim = max(1, min(limit, SEARCH_MAX_LIMIT))
+    users = await get_runtime().run(
+        account, lambda ig: search.search_users(ig, query=text, limit=lim)
+    )
+    return _serialize(users)
+
+
+@mcp.tool()
+async def search_hashtag(
+    tag: str,
+    limit: int = 24,
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Posts for a hashtag, as Instagram's search ranks them (top results).
+
+    The classic hashtag page no longer exists; this is the keyword search
+    for ``#tag``. Returns ``{items, next_cursor, stopped}`` (see
+    `get_saved_posts`); items are posts (mostly reels). About 24 posts per
+    request, at most 3 requests per call. Search has its own small budget.
+
+    Args:
+        tag: The hashtag, with or without the leading "#" (e.g. "travel").
+        limit: Max posts to return (default 24, capped at 50).
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
+    """
+    norm = search.normalize_tag(tag)
+    return await _paged(
+        "search_hashtag", account, cursor, {"tag": norm},
+        lambda ig, start: search.fetch_hashtag_page(
+            ig, tag=norm, limit=max(1, min(limit, SEARCH_MAX_LIMIT)), start=start,
+            max_pages=search.HASHTAG_MAX_PAGES,
+        ),
+    )
+
+
 async def _amain() -> None:
     try:
         await mcp.run_stdio_async()

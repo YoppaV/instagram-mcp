@@ -134,3 +134,23 @@ class MediaDownloadResult:
     shortcode: str
     downloaded: tuple[DownloadedMedia, ...]
     skipped: tuple[SkippedMedia, ...]
+
+
+@dataclass(frozen=True)
+class Comment:
+    """A comment on a post, or a reply to one (``parent_pk`` set).
+
+    ``replies`` is ``None`` when replies were not requested; otherwise the
+    first few replies (capped — ``reply_count`` is the full number).
+    """
+
+    pk: str
+    text: str | None
+    created_at: int | None  # unix seconds
+    like_count: int | None
+    reply_count: int | None
+    parent_pk: str | None
+    is_pinned: bool
+    is_edited: bool
+    author: User | None
+    replies: tuple["Comment", ...] | None = None

@@ -1,0 +1,163 @@
+{
+ "data": {
+  "xdt_viewer": {
+   "user": {
+    "id": "999"
+   }
+  },
+  "xdt_fbsearch__top_serp_graphql": {
+   "edges": [
+    {
+     "node": {
+      "__typename": "XDTTopSerpMediaGridUnit",
+      "rank_token": "RANK",
+      "items": [
+       {
+        "__typename": "XDTMediaDict",
+        "pk": "8001",
+        "id": "8001_501",
+        "code": "TAGAAAAAAA1",
+        "media_type": 2,
+        "user": {
+         "pk": "501",
+         "id": "501",
+         "username": "carolfan",
+         "is_verified": false,
+         "is_unpublished": false,
+         "profile_pic_url": "https://cdn.example/carolfan.jpg",
+         "fbid_v2": "1784501",
+         "full_name": "Carolfan",
+         "is_private": false
+        },
+        "taken_at": 1780000000,
+        "image_versions2": {
+         "candidates": [
+          {
+           "height": 480,
+           "width": 640,
+           "url": "https://cdn.example/TAGAAAAAAA1.jpg"
+          }
+         ]
+        },
+        "caption": {
+         "text": "#travel post TAGAAAAAAA1"
+        },
+        "video_versions": [
+         {
+          "url": "https://cdn.example/TAGAAAAAAA1.mp4",
+          "type": 101,
+          "height": 720,
+          "width": 960
+         }
+        ],
+        "carousel_media": null,
+        "like_count": 10,
+        "comment_count": 2,
+        "view_count": null,
+        "product_type": "clips"
+       },
+       {
+        "__typename": "XDTMediaDict",
+        "pk": "8002",
+        "id": "8002_502",
+        "code": "TAGAAAAAAA2",
+        "media_type": 1,
+        "user": {
+         "pk": "502",
+         "id": "502",
+         "username": "dave.reads",
+         "is_verified": true,
+         "is_unpublished": false,
+         "profile_pic_url": "https://cdn.example/dave.reads.jpg",
+         "fbid_v2": "1784502",
+         "full_name": "Dave.Reads",
+         "is_private": false
+        },
+        "taken_at": 1780000000,
+        "image_versions2": {
+         "candidates": [
+          {
+           "height": 480,
+           "width": 640,
+           "url": "https://cdn.example/TAGAAAAAAA2.jpg"
+          }
+         ]
+        },
+        "caption": {
+         "text": "#travel post TAGAAAAAAA2"
+        },
+        "video_versions": null,
+        "carousel_media": null,
+        "like_count": 10,
+        "comment_count": 2,
+        "view_count": null,
+        "product_type": "feed"
+       }
+      ]
+     },
+     "cursor": null
+    },
+    {
+     "node": {
+      "__typename": "XDTTopSerpMediaGridUnit",
+      "rank_token": "RANK",
+      "items": [
+       {
+        "__typename": "XDTMediaDict",
+        "pk": "8003",
+        "id": "8003_503",
+        "code": "TAGAAAAAAA3",
+        "media_type": 2,
+        "user": {
+         "pk": "503",
+         "id": "503",
+         "username": "erin_cooks",
+         "is_verified": false,
+         "is_unpublished": false,
+         "profile_pic_url": "https://cdn.example/erin_cooks.jpg",
+         "fbid_v2": "1784503",
+         "full_name": "Erin_Cooks",
+         "is_private": false
+        },
+        "taken_at": 1780000000,
+        "image_versions2": {
+         "candidates": [
+          {
+           "height": 480,
+           "width": 640,
+           "url": "https://cdn.example/TAGAAAAAAA3.jpg"
+          }
+         ]
+        },
+        "caption": {
+         "text": "#travel post TAGAAAAAAA3"
+        },
+        "video_versions": [
+         {
+          "url": "https://cdn.example/TAGAAAAAAA3.mp4",
+          "type": 101,
+          "height": 720,
+          "width": 960
+         }
+        ],
+        "carousel_media": null,
+        "like_count": 10,
+        "comment_count": 2,
+        "view_count": null,
+        "product_type": "clips"
+       }
+      ]
+     },
+     "cursor": null
+    }
+   ],
+   "page_info": {
+    "has_next_page": true,
+    "end_cursor": "SERP_CURSOR_2"
+   }
+  }
+ },
+ "extensions": {
+  "is_final": true
+ }
+}
