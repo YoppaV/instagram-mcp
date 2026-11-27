@@ -84,10 +84,11 @@ def browser_context_options(
     *,
     locale: str | None = None,
     timezone_id: str | None = None,
+    viewport: dict[str, int] | None = None,
 ) -> dict[str, object]:
     """Keyword arguments for ``browser.new_context``, shared by login and tools."""
     return {
-        "viewport": VIEWPORT,
+        "viewport": dict(viewport or VIEWPORT),
         "user_agent": build_user_agent(browser_version),
         "locale": locale or browser_locale(),
         "timezone_id": timezone_id or browser_timezone_id(),

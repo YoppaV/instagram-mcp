@@ -28,6 +28,7 @@ _COLLECTION_ID_RE = re.compile(r"^\d{1,30}$")
 SAVED_PER_PAGE = 21
 COLLECTION_PER_PAGE = 12
 MAX_COLLECTION_LIST_PAGES = 5
+_GQL_PREFIX = "gql:"
 
 
 async def fetch_saved_page(
@@ -55,11 +56,11 @@ async def fetch_saved_page(
         # REST collection feed first: it still answers and, unlike the GraphQL
         # page the web uses now, carries video_versions and taken_at (D3/R3).
         # If it is gone or refuses the id, the walk switches to GraphQL; the
-        # choice is made on the first page so cursors never mix.
-        mode = {"rest": True}
+        # choice is made on the first page and GraphQL cursors carry a
+        # ``gql:`` prefix, so a resumed walk never mixes the two.
 
         async def fetch_page(upstream: str | None) -> tuple[list[Post], str | None]:
-            if mode["rest"]:
+            if upstream is None or not upstream.startswith(_GQL_PREFIX):
                 try:
                     body = await ig.rest(
                         "collection_feed",
@@ -70,15 +71,16 @@ async def fetch_saved_page(
                 except (EndpointGoneError, OperationFailedError):
                     if upstream is not None:
                         raise
-                    mode["rest"] = False
-            root = await ig.graphql("saved_collection", collection_id=cid, after=upstream)
+            after = upstream[len(_GQL_PREFIX):] if upstream else None
+            root = await ig.graphql("saved_collection", collection_id=cid, after=after)
             if root is None:
                 raise ValueError(
                     f"Saved collection {cid!r} does not exist. "
                     "List yours with get_saved_collections."
                 )
             media = root.get("media") if isinstance(root, dict) else None
-            return connection_posts(media), connection_cursor(media)
+            nxt = connection_cursor(media)
+            return connection_posts(media), (_GQL_PREFIX + nxt) if nxt else None
 
     return await paginate(
         fetch_page,

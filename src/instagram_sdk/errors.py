@@ -114,3 +114,12 @@ class UnknownAccountError(AccountError):
 
 class NoSessionError(AccountError):
     pass
+
+
+class AmbiguousAccountError(AccountError):
+    """Several sessions and nothing says which one is the default."""
+
+
+class AccountConfigError(AccountError):
+    """The session files on disk are inconsistent (e.g. two handles that only
+    differ in case)."""

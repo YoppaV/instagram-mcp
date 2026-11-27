@@ -4,13 +4,22 @@ Launches a headed Chromium window, navigates to the Instagram login page, and
 waits for the user to authenticate manually (password, 2FA, "save your login
 info", suspicious-login checkpoints — whatever Instagram throws up). As soon as
 the session cookies (``sessionid`` + ``ds_user_id``) appear, the full
-``storage_state`` is serialized to ``sessions/<handle>_instagram_state.json``.
-The MCP server reads this file on every tool call.
+``storage_state`` is serialized to ``<session_dir>/<handle>_instagram_state.json``,
+next to a sidecar ``<handle>_instagram_meta.json`` (user id, locale, timezone
+and viewport used at login, no secrets) so the server reuses the same
+fingerprint for that account. The MCP server reads these files on every call.
+
+Each account is its own pair of files: logging in another account adds a
+new pair and never touches the others. Re-running for the same account
+replaces only its own files (written atomically, so an aborted login keeps
+the previous session intact).
 
 Run from the project root::
 
     venv/bin/python -m scripts.auth_login --username yourhandle      # macOS, Linux, WSL2
     venv\Scripts\python -m scripts.auth_login --username yourhandle   # Windows
+    venv/bin/python -m scripts.auth_login --username second --locale es-ES \
+        --timezone-id Europe/Madrid                                   # add another account
 
 The browser window opens natively; on WSL2 it is painted through WSLg.
 """
@@ -18,6 +27,7 @@ The browser window opens natively; on WSL2 it is painted through WSLg.
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import sys
 from pathlib import Path
@@ -29,14 +39,16 @@ from pathlib import Path as _Path
 
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent / "src"))
 
+from instagram_sdk.accounts import SESSION_GLOB, build_meta, write_meta  # noqa: E402
 from instagram_sdk.auth import (  # noqa: E402
     DEFAULT_LOGIN_TIMEOUT_S,
     LOGIN_URL,
+    VIEWPORT,
     browser_context_options,
     browser_locale,
+    browser_timezone_id,
     fetch_logged_in_username,
     resolve_session_handle,
-    save_storage_state,
     user_agent_override,
     validate_handle,
     wait_for_instagram_login,
@@ -68,11 +80,48 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Instagram handle (defaults to INSTAGRAM_USERNAME from .env).",
     )
+    parser.add_argument(
+        "--locale",
+        type=str,
+        default=None,
+        help="Browser locale for this account, e.g. es-ES (default: BROWSER_LOCALE or en-US). "
+        "Saved in the sidecar; the server reuses it for this account.",
+    )
+    parser.add_argument(
+        "--timezone-id",
+        type=str,
+        default=None,
+        help="Browser timezone for this account, e.g. Europe/Madrid "
+        "(default: BROWSER_TIMEZONE_ID or Etc/UTC). Saved in the sidecar.",
+    )
     return parser.parse_args()
 
 
+def _save_session_atomically(context, path: Path) -> None:
+    """``storage_state`` into a temp file, then rename over ``path``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.part")
+    try:
+        context.storage_state(path=str(tmp))
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _launch_and_save(
-    headless: bool, timeout_s: int, handle: str, session_dir: Path
+    headless: bool,
+    timeout_s: int,
+    handle: str,
+    session_dir: Path,
+    locale: str | None = None,
+    timezone_id: str | None = None,
 ) -> tuple[str, Path]:
     """Run the login and return the handle and file it was saved under."""
     try:
@@ -96,15 +145,21 @@ def _launch_and_save(
                 )
             raise RuntimeError(f"Failed to launch Chromium: {exc}\n{hint}") from exc
 
+        locale = locale or browser_locale()
+        timezone_id = timezone_id or browser_timezone_id()
         try:
-            context = browser.new_context(**browser_context_options(browser.version))
+            context = browser.new_context(
+                **browser_context_options(
+                    browser.version, locale=locale, timezone_id=timezone_id, viewport=VIEWPORT
+                )
+            )
             page = context.new_page()
             # Same fingerprint as the server: sec-ch-ua* agree with the UA.
             try:
                 cdp = context.new_cdp_session(page)
                 cdp.send(
                     "Emulation.setUserAgentOverride",
-                    user_agent_override(browser.version, browser_locale()),
+                    user_agent_override(browser.version, locale),
                 )
             except PlaywrightError:
                 pass
@@ -129,7 +184,17 @@ def _launch_and_save(
                     f"logged in is {final_handle}. Using {final_handle}.[/yellow]"
                 )
             session_file = session_dir / f"{final_handle}_instagram_state.json"
-            save_storage_state(context, session_file)
+            _save_session_atomically(context, session_file)
+            write_meta(
+                session_file,
+                build_meta(
+                    username=final_handle,
+                    user_id=cookies.get("ds_user_id"),
+                    locale=locale,
+                    timezone_id=timezone_id,
+                    viewport=VIEWPORT,
+                ),
+            )
             return final_handle, session_file
         finally:
             browser.close()
@@ -151,9 +216,19 @@ def main() -> int:
         console.print(f"[red]{exc}[/red]")
         return 2
 
+    others = sorted(
+        p.name for p in cfg.session_dir.glob(SESSION_GLOB)
+        if p.name.casefold() != f"{handle}_instagram_state.json".casefold()
+    )
+    if others:
+        console.print(
+            f"[cyan]Other accounts in {cfg.session_dir} are left untouched: "
+            f"{', '.join(others)}[/cyan]"
+        )
     try:
         handle, session_file = _launch_and_save(
-            args.headless, args.timeout, handle, cfg.session_dir
+            args.headless, args.timeout, handle, cfg.session_dir,
+            locale=args.locale, timezone_id=args.timezone_id,
         )
     except (RuntimeError, TimeoutError) as exc:
         console.print(f"[red]{exc}[/red]")
@@ -163,6 +238,11 @@ def main() -> int:
         return 2
 
     console.print(f"[green]Wrote storage state for {handle} to {session_file}[/green]")
+    if others:
+        console.print(
+            "[green]Several accounts are now logged in: tools take `account`; set "
+            "INSTAGRAM_DEFAULT_ACCOUNT for calls without it.[/green]"
+        )
     console.print(
         "[green]Done. Register the server with Claude if you haven't: "
         "see 'Connect Claude' in the README.[/green]"

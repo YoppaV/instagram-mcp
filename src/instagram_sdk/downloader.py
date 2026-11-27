@@ -13,7 +13,11 @@ which keeps it trivially unit-testable with a fake client. Mirrors the sibling
 
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
 
@@ -157,3 +161,54 @@ def is_downloadable_media_url(url: str) -> bool:
         host == suffix or host.endswith("." + suffix)
         for suffix in _ALLOWED_HOST_SUFFIXES
     )
+
+
+# --------------------------------------------------------------------------
+# Where downloads land
+# --------------------------------------------------------------------------
+_SAFE_PART = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SAFE_ACCOUNT = re.compile(r"^[a-z0-9._]{1,30}$")
+
+
+def media_path(root: Path, account: str, shortcode: str, pk: str | None,
+               index: int, ext: str) -> Path:
+    """``<root>/<account>/post_<shortcode>_<pk>_<NN>.<ext>``.
+
+    One folder per account (its handle, casefolded). The numeric ``pk``
+    keeps posts apart on case-insensitive file systems (Windows, macOS, SMB),
+    where two shortcodes that differ only in case would otherwise collide.
+    The same media always maps to the same name, so re-downloading is
+    idempotent. Every part is validated and the result must stay under
+    ``root``.
+    """
+    folder = account.casefold()
+    if not _SAFE_ACCOUNT.match(folder) or not folder.strip("."):
+        raise ValueError(f"unsafe account folder name: {account!r}")
+    if not _SAFE_PART.match(shortcode or ""):
+        raise ValueError(f"unsafe shortcode: {shortcode!r}")
+    ext = (ext or "").lower()
+    if not re.match(r"^[a-z0-9]{1,5}$", ext):
+        raise ValueError(f"unsafe extension: {ext!r}")
+    pk_part = str(pk) if pk and str(pk).isdigit() else "0"
+    name = f"post_{shortcode}_{pk_part}_{int(index):02d}.{ext}"
+    root_resolved = root.expanduser().resolve()
+    path = (root_resolved / folder / name).resolve()
+    if root_resolved not in path.parents:
+        raise ValueError(f"download path escapes the downloads directory: {path}")
+    return path
+
+
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write through a unique temporary file + rename: never half a file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".part", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Union
 
 from .accounts import Account, session_fingerprint
-from .auth import browser_context_options, user_agent_override
+from .auth import VIEWPORT, browser_context_options, user_agent_override
 from .errors import BrowserUnavailableError, SessionExpiredError
 from .pacer import Pacer
 from .settings import DEFAULT_IDLE_TIMEOUT_S, Settings
@@ -237,11 +237,13 @@ class BrowserManager:
             await self._close_context(key)
 
         browser = await self._ensure_browser()
-        options = browser_context_options(
-            browser.version,
+        # Per-account fingerprint: the sidecar written at login, else the env.
+        fp_opts = account.fingerprint_options(
             locale=self._settings.locale,
             timezone_id=self._settings.timezone_id,
+            viewport=VIEWPORT,
         )
+        options = browser_context_options(browser.version, **fp_opts)
         self._user_agent = str(options["user_agent"])
         context = None
         try:
@@ -255,7 +257,7 @@ class BrowserManager:
             cdp = await context.new_cdp_session(page)
             await cdp.send(
                 "Emulation.setUserAgentOverride",
-                user_agent_override(browser.version, self._settings.locale),
+                user_agent_override(browser.version, str(fp_opts["locale"])),
             )
             blocked = blocked_resource_types(self._settings.block_js)
 
@@ -384,15 +386,17 @@ class BrowserSession:
     ) -> None:
         from dataclasses import replace
 
+        from .accounts import AccountRegistry
         from .runtime import Runtime
 
         source = session_path
         settings = replace(
             Settings.from_env(), idle_timeout_s=idle_timeout_s, headless=headless
         )
+        fixed = source if callable(source) else (lambda: Path(source))
         self._runtime = Runtime(
             settings,
-            session_source=(source if callable(source) else (lambda: Path(source))),
+            registry=AccountRegistry(settings, fixed=fixed),
             max_requests_per_call=None,
         )
 

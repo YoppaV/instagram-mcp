@@ -22,21 +22,33 @@ HTTP.
 
 ## Tools
 
-| Tool | Parameters |
-|---|---|
-| `auth_status` | — |
-| `get_saved_posts` | `collection_id` (optional), `limit` (default 24) |
-| `get_saved_collections` | — |
-| `get_home_feed` | `limit` (default 15) |
-| `get_user_profile` | `username` |
-| `get_user_posts` | `username`, `limit` (default 24), `include_reels` (default false) |
-| `get_post` | `id_or_url` (shortcode or post/reel URL) |
-| `get_user_reels` | `username`, `limit` (default 12) |
-| `download_media` | `id_or_url`, `indices` (optional), `download_videos` (default false) |
+| Tool | Parameters | Returns |
+|---|---|---|
+| `auth_status` | `account` | session + state of one account |
+| `list_accounts` | — | every logged-in account and its state |
+| `get_saved_posts` | `collection_id` (optional), `limit` (default 24), `cursor`, `account` | page |
+| `get_saved_collections` | `account` | list |
+| `get_home_feed` | `limit` (default 15), `cursor`, `account` | page |
+| `get_user_profile` | `username`, `account` | profile or `null` |
+| `get_user_posts` | `username`, `limit` (default 24), `include_reels` (default false), `cursor`, `account` | page |
+| `get_post` | `id_or_url` (shortcode or post/reel URL), `account` | post or `null` |
+| `get_user_reels` | `username`, `limit` (default 12), `cursor`, `account` | page |
+| `download_media` | `id_or_url`, `indices` (optional), `download_videos` (default false), `account` | images + summary |
 
 Tools return plain JSON (dataclasses serialized to dicts). `download_media`
 additionally returns inline `Image` objects for any image bytes it fetched.
 Every `limit` is capped at 50: a larger value is clamped, not rejected.
+
+**Pages.** The four list tools marked "page" return
+`{"items": [...], "next_cursor": "..." | null, "stopped": "end" | "limit" | "page_cap" | "budget"}`.
+Pass `next_cursor` back as `cursor` (with the same other arguments) to read
+the next items, with no overlap. The cursor is opaque and stateless: it works
+after a restart and from another client, and it is rejected if reused for a
+different tool, account or query.
+
+**Accounts.** Every tool takes an optional `account` (a handle from
+`list_accounts`). Without it the default account is used: see
+[Several accounts](#several-accounts).
 
 ## Requirements
 
@@ -124,8 +136,38 @@ or malformed value is refused before the browser opens; if the account that
 logs in turns out to be a different one, the file is named after the real
 account and you get a warning.
 
+Next to the session the script writes `<handle>_instagram_meta.json` (user
+id, locale, timezone and viewport used at login; no secrets) so the server
+reuses the same fingerprint for that account. `--locale es-ES --timezone-id
+Europe/Madrid` set them for the account you are logging in.
+
 The session file contains a logged-in cookie for your account — treat it
 like a password. It is `.gitignore`d and lives outside the repo by default.
+
+### Several accounts
+
+Log in each account once; each one is its own pair of files and logging in
+another account never touches the existing ones:
+
+```bash
+venv/bin/python -m scripts.auth_login --username secondhandle
+```
+
+Every `<handle>_instagram_state.json` found is an account (no restart
+needed). Tools pick one with `account="secondhandle"`; without it the
+**default account** is, in order: `INSTAGRAM_DEFAULT_ACCOUNT` (must have a
+session — a wrong value is an error, not silently replaced),
+`INSTAGRAM_SESSION_FILE`, `INSTAGRAM_USERNAME` if it has a session, or the
+only session there is. With several sessions and none of those set, a call
+without `account` fails with `AmbiguousAccountError` instead of guessing.
+`auth_status` reports `default_source` and a `warning` when, for example,
+`INSTAGRAM_USERNAME` names an account with no session.
+
+All accounts share one Chromium, with one isolated browser context per
+account (its own cookies and fingerprint), opened on demand and closed after
+`BROWSER_IDLE_TIMEOUT_S` of inactivity each. Calls never overlap, across
+accounts and across server processes (a lock file in `INSTAGRAM_STATE_DIR`),
+and switching account adds a 5–10 s pause.
 
 ## Run
 
@@ -185,7 +227,7 @@ from instagram_sdk.endpoints import saved
 
 async def main():
     session = Path.home() / ".instagram-mcp" / "sessions" / "yourhandle_instagram_state.json"
-    browser = BrowserSession(session, idle_timeout_s=0, headless=True)
+    browser = BrowserSession(session, idle_timeout_s=0, headless=True)  # one account
     try:
         async with browser.page() as ig:  # an in-page client, not a Playwright Page
             posts = await saved.fetch_saved(ig, collection_id=None, limit=10)
@@ -197,19 +239,26 @@ async def main():
 asyncio.run(main())
 ```
 
+The `fetch_*` functions keep returning plain lists; the `fetch_*_page`
+variants (what the tools use) return a `PageResult` with a resumable
+`CursorState`. Library calls share the account's hourly/daily budget and the
+cross-process lock with the MCP server.
+
 ## Configuration
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `INSTAGRAM_USERNAME` | — | Handle used by `scripts.auth_login` to name the session file. |
-| `INSTAGRAM_SESSION_FILE` | auto-discovered | Explicit path to the storage_state JSON. |
+| `INSTAGRAM_DEFAULT_ACCOUNT` | — | Account used when a tool gets no `account`. Must have a session file. |
+| `INSTAGRAM_USERNAME` | — | Handle used by `scripts.auth_login` to name the session file; legacy alias of the default account. |
+| `INSTAGRAM_SESSION_FILE` | — | One more session file, outside the session directory; it becomes the default account unless `INSTAGRAM_DEFAULT_ACCOUNT` says otherwise. |
 | `INSTAGRAM_SESSION_DIR` | `~/.instagram-mcp/sessions` | Directory holding `<handle>_instagram_state.json`. The legacy in-repo `sessions/` is checked as a fallback. |
 | `BROWSER_IDLE_TIMEOUT_S` | `180` | Seconds Chromium stays warm between calls. |
 | `BROWSER_HEADLESS` | `true` | `false` launches a visible browser (harder to detect). |
 | `BROWSER_LOCALE` | `en-US` | Locale reported to instagram.com. Align with your account's real region for a less detectable fingerprint. |
 | `BROWSER_TIMEZONE_ID` | `Etc/UTC` | Timezone reported to instagram.com. Same as above. |
-| `INSTAGRAM_DOWNLOADS_DIR` | `~/.instagram-mcp/downloads` | Where `download_media` writes fetched files. |
-| `INSTAGRAM_STATE_DIR` | `~/.instagram-mcp/state` | Persistent state: whether Instagram stopped the account, cached user ids. |
+| `INSTAGRAM_DOWNLOADS_DIR` | `~/.instagram-mcp/downloads` | Root for `download_media`: files go to `<root>/<account>/post_<shortcode>_<pk>_<NN>.<ext>`. |
+| `INSTAGRAM_STATE_DIR` | `~/.instagram-mcp/state` | Persistent state per account (block state, request budget), the cross-process lock and cached user ids. |
+| `INSTAGRAM_MAX_REQUESTS_PER_HOUR` / `_PER_DAY` | `150` / `800` | Request budget per account (sliding windows, persisted). `0` disables that window. |
 | `INSTAGRAM_BLOCK_JS` | `true` | `false` lets instagram.com's scripts run in the tab (fallback mode, more RAM, not measured). |
 | `BROWSER_CHANNEL` | — | Optional Playwright channel (e.g. `chromium` for the new headless). |
 | `INSTAGRAM_LOG_LEVEL` | `WARNING` | Server log level (logs go to stderr). |
@@ -237,23 +286,36 @@ call fails at once without touching the network:
   and either log in again or run
   `venv/bin/python -m scripts.account_state --clear <handle>`.
 
-`auth_status` shows the current `state` and `block`.
+- any of these signals, except an expired session, also pauses the **other**
+  accounts for 30 min (`global_cooldown`): they share the IP and the browser;
+- three failed operations in a row within 10 min pause that account for
+  15 min (`kind: "failures"`): a run of unexplained failures can be a soft
+  block.
+
+On top of that each account has a request budget (150 per hour and 800 per
+day by default, persisted in `INSTAGRAM_STATE_DIR`); going over it raises
+`BudgetExceededError` with the wait, and never sleeps.
+
+`auth_status` / `list_accounts` show each account's `state` and `block`.
 
 ## Architecture
 
 ```
 src/instagram_sdk/
-├── server.py      FastMCP entrypoint — 9 tools (8 read-only + download_media)
-├── runtime.py     Runtime.run(): account state check → lock → context → call
+├── server.py      FastMCP entrypoint — 10 tools (9 read-only + download_media)
+├── runtime.py     Runtime.run(): resolve account → state check → global lock
+│                  (process + file) → context → call → persist budget/state
 ├── browser.py     BrowserManager (1 Chromium, 1 context + fixed tab per account,
 │                  resource blocking, Client Hints, crash recovery) + BrowserSession facade
 ├── inpage.py      InPageClient: rest() / graphql() / navigate_html() via page.evaluate(fetch)
 ├── tokens.py      fb_dtsg / lsd / actorID from the page HTML (never logged)
 ├── ops.py         operation registry: doc_id, variables template, response root
 ├── guard.py       blocking-signal rules (429, challenge, checkpoint, ...)
-├── accounts.py    account + persistent block state (cooldown / blocked / expired)
-├── pacer.py       pauses between requests + per-call cap
-├── cursors.py     cursor-driven pagination loop
+├── accounts.py    account discovery + default account, sidecar, persistent
+│                  block state, failure brake, global pause, request budget
+├── locks.py       cross-process lock file (fcntl / msvcrt)
+├── pacer.py       pauses between requests, per-call cap, budget hook
+├── cursors.py     cursor-driven pagination loop + opaque stateless cursor
 ├── settings.py    the only reader of environment variables
 ├── errors.py      typed errors (AccountBlockedError, SessionExpiredError, ...)
 ├── auth.py        storage_state + session helpers + UA / Client Hints
@@ -339,8 +401,16 @@ every instagram.com request locally (`RUN_BROWSER_TESTS=1`), and
 - **`DocIdStaleError` / `OperationFailedError`** naming an operation —
   Instagram rotated it. See
   [Maintenance](#maintenance--when-instagram-rotates-operations).
-- **`BudgetExceededError`** — our own cap of 20 requests per call was hit;
-  ask for a smaller `limit`.
+- **`BudgetExceededError`** — our own cap was hit: 20 requests per call (ask
+  for a smaller `limit`, or continue with `next_cursor`) or the account's
+  hourly/daily budget (the message says how long to wait).
+- **`AmbiguousAccountError`** — several accounts are logged in and none is
+  the default: pass `account` or set `INSTAGRAM_DEFAULT_ACCOUNT`.
+- **`UnknownAccountError`** — the `account` (or `INSTAGRAM_DEFAULT_ACCOUNT`)
+  has no session file; `list_accounts` shows the ones there are.
+- **"another instagram-mcp process is still using the browser"** — another
+  server (another Claude Code session) held the lock for 180 s. Calls are
+  serialized on purpose; retry when it finishes.
 - **Chromium won't launch** — on Linux/WSL2, install system libraries with
   `sudo venv/bin/python -m playwright install-deps chromium`. On Windows,
   repeat `venv\Scripts\python -m playwright install chromium`.
@@ -349,9 +419,8 @@ every instagram.com request locally (`RUN_BROWSER_TESTS=1`), and
 
 ## Out of scope
 
-Writes (liking, posting, following), comment threads, stories, direct
-messages and multiple accounts (planned). This is a read-only,
-single-account, real-time query tool.
+Writes (liking, posting, following), comment threads, stories and direct
+messages. This is a read-only, real-time query tool for accounts you own.
 
 ## License
 

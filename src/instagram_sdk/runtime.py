@@ -1,18 +1,26 @@
-"""Process-wide runtime: browser, lock, account state and the download client.
+"""Process-wide runtime: accounts, browser, locks, state and the download client.
 
 ``Runtime.run(account, fn)`` is the one door every tool goes through:
 
-1. resolve the account (this PR: the single session file the server finds);
-2. if its stored state is ``blocked``, a live ``cooldown`` or ``expired`` for
-   the same session file → raise at once, without touching the network;
-3. take the lock (one Instagram request stream per process, never two);
-4. get the account's warm context and build an ``InPageClient``;
-5. run ``fn(client)``; afterwards schedule the idle close;
-6. a ``BrowserUnavailableError(retryable=True)`` (Chromium died) repeats
-   steps 4-5 once — it is a local failure and the requests are reads.
+1. resolve the account (``AccountRegistry``: explicit ``account`` or the
+   default; validated against the session files on disk);
+2. if its stored state is ``blocked``, a live ``cooldown`` (its own or the
+   global pause after another account was stopped) or ``expired`` for the
+   same session file → raise at once, without touching the network;
+3. take the global lock: the process ``asyncio.Lock`` and then the file lock
+   ``<state>/nav.lock`` shared by every server process (180 s at most);
+4. if the last account that drove Instagram was another one, pause 5-10 s;
+5. get the account's warm context (one ``BrowserContext`` per account, one
+   Chromium) and build an ``InPageClient`` with the account's persisted
+   hourly/daily budget;
+6. run ``fn(client)``; afterwards persist budget and last-request time,
+   count failures for the failure brake, schedule the idle close and release
+   the locks in reverse order;
+7. a ``BrowserUnavailableError(retryable=True)`` (Chromium died) repeats
+   steps 5-6 once — it is a local failure and the requests are reads.
 
 Allowed state here is process-level only. Nothing per client or per
-conversation is kept.
+conversation is kept (no "current account", no cursors in memory).
 """
 
 from __future__ import annotations
@@ -24,12 +32,16 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
-from .accounts import Account, AccountStateStore
+from .accounts import Account, AccountRegistry, AccountStateStore
 from .browser import BrowserManager
 from .endpoints.users import UserIdCache
-from .errors import OperationFailedError, SessionExpiredError, UnknownAccountError
+from .errors import (
+    OperationFailedError,
+    SessionExpiredError,
+)
 from .guard import BlockSignal
 from .inpage import InPageClient
+from .locks import FileLock
 from .pacer import MAX_REQUESTS_PER_CALL
 from .settings import Settings
 
@@ -46,13 +58,19 @@ class Runtime:
         self,
         settings: Settings,
         *,
+        registry: AccountRegistry | None = None,
         session_source: Callable[[], Path] | None = None,
         browser: BrowserManager | None = None,
         max_requests_per_call: int | None = MAX_REQUESTS_PER_CALL,
     ) -> None:
         self.settings = settings
-        self._session_source = session_source or settings.resolve_session_path
+        if registry is None:
+            # ``session_source`` = one fixed session file (tests, old callers).
+            registry = AccountRegistry(settings, fixed=session_source)
+        self.registry = registry
         self._lock = asyncio.Lock()
+        self._file_lock = FileLock(settings.state_dir / "nav.lock")
+        self._file_lock_warned = False
         self.browser = browser or BrowserManager(
             settings, lock=self._lock, max_requests_per_call=max_requests_per_call
         )
@@ -62,43 +80,68 @@ class Runtime:
         self._download_sem: asyncio.Semaphore | None = None
 
     # ------------------------------------------------------------------
-    def current_account(self) -> Account:
-        return Account.from_session(self._session_source())
-
     def resolve(self, account: str | None) -> Account:
-        acct = self.current_account()
-        if account is not None:
-            wanted = account.strip().lstrip("@").casefold()
-            if wanted != acct.key:
-                raise UnknownAccountError(
-                    f"Unknown account {account!r}. Available: {acct.handle!r}."
-                )
-        return acct
+        return self.registry.resolve(account)
 
     async def _acquire(self) -> None:
+        deadline = time.monotonic() + LOCK_WAIT_S
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=LOCK_WAIT_S)
         except asyncio.TimeoutError:
             raise OperationFailedError(
                 "lock", f"another Instagram call is still running after {LOCK_WAIT_S}s"
             ) from None
+        try:
+            got = await self._file_lock.acquire(max(0.0, deadline - time.monotonic()))
+        except OSError as exc:
+            # State dir unusable (read-only volume...): the process lock still
+            # serializes this server; say so once and carry on.
+            if not self._file_lock_warned:
+                log.error("instagram_sdk: cross-process lock unavailable (%s); "
+                          "only this process is serialized", exc)
+                self._file_lock_warned = True
+            return
+        except BaseException:
+            self._lock.release()
+            raise
+        if not got:
+            self._lock.release()
+            raise OperationFailedError(
+                "lock",
+                f"another instagram-mcp process is still using the browser after "
+                f"{LOCK_WAIT_S}s ({self._file_lock.path})",
+            )
+
+    def _release(self) -> None:
+        try:
+            self._file_lock.release()
+        finally:
+            self._lock.release()
 
     @asynccontextmanager
     async def session(self, account: str | None) -> AsyncIterator[InPageClient]:
-        """Hold the lock and yield a client for one logical call."""
+        """Hold the global lock and yield a client for one logical call."""
         acct = self.resolve(account)
         if not acct.session_path.exists():
             raise SessionExpiredError(
                 f"Instagram session file not found at {acct.session_path}. "
-                "Run: python -m scripts.auth_login"
+                f"Run: python -m scripts.auth_login --username {acct.handle}"
             )
         self.state.check(acct)
         await self._acquire()
         try:
             # Again under the lock: a call queued behind one that just got
-            # blocked must not hit Instagram (nor add a strike).
+            # blocked (here or in another process) must not hit Instagram.
             self.state.check(acct)
             actx = await self.browser.context_for(acct)
+            last = self.state.load_global().get("last_account")
+            if last and last != acct.key:
+                await actx.pacer.switch_pause()
+            budget = self.state.budget(
+                acct,
+                per_hour=self.settings.max_requests_per_hour,
+                per_day=self.settings.max_requests_per_day,
+            )
 
             async def on_block(signal: BlockSignal) -> Exception:
                 try:
@@ -110,14 +153,31 @@ class Runtime:
 
             client = InPageClient(actx, on_block=on_block, user_ids=self.user_ids)
             client.new_call()
+            actx.pacer.budget = budget
+            failed: OperationFailedError | None = None
             try:
                 yield client
+            except OperationFailedError as exc:
+                failed = exc
+                raise
             finally:
+                pacer = actx.pacer
+                pacer.budget = None
+                made = pacer.requests_this_call > 0
+                try:
+                    self.state.save_usage(acct, budget if made else None,
+                                          pacer.last_request_wall if made else None)
+                    if failed is not None:
+                        self.state.record_failure(acct, str(failed))
+                    elif made:
+                        self.state.record_success(acct)
+                except Exception:  # state is best effort; never mask the result
+                    log.exception("instagram_sdk: could not persist usage for %s", acct.handle)
                 actx.last_used = time.monotonic()
                 if not actx.dead:
                     self.browser.schedule_idle(acct.handle)
         finally:
-            self._lock.release()
+            self._release()
 
     async def run(self, account: str | None, fn: Callable[[InPageClient], Awaitable[T]]) -> T:
         from .errors import BrowserUnavailableError
@@ -172,7 +232,8 @@ def get_runtime() -> Runtime:
     """Lazy per-process singleton, created on first use inside the event loop."""
     global _runtime
     if _runtime is None:
-        _runtime = Runtime(Settings.from_env())
+        settings = Settings.from_env()
+        _runtime = Runtime(settings, registry=AccountRegistry(settings))
     return _runtime
 
 
