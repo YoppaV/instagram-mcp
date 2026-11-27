@@ -157,6 +157,37 @@ class ExtractCollectionsTests(unittest.TestCase):
         self.assertEqual(parsers.extract_collections({}), [])
 
 
+class NewShapesTests(unittest.TestCase):
+    def test_collections_v2_root_drops_audio_and_uses_cover_list(self) -> None:
+        cols = parsers.extract_collections(_load("gql_collections_v2.json"))
+        self.assertEqual([c.collection_id for c in cols],
+                         ["ALL_MEDIA_AUTO_COLLECTION", "17900000000000001", "17900000000000002"])
+        self.assertEqual(cols[0].cover_image_url, "https://cdn.example.com/allcover.jpg")
+        self.assertEqual(cols[1].cover_image_url, "https://cdn.example.com/recipes.jpg")
+
+    def test_collection_media(self) -> None:
+        posts = parsers.extract_collection_media(_load("gql_collection_media.json"))
+        self.assertEqual([p.id for p in posts], ["7001_80", "7002_81"])
+
+    def test_search_users(self) -> None:
+        users = parsers.extract_search_users(_load("gql_search_users.json"))
+        self.assertEqual([u.username for u in users], ["carolfan", "Carol"])
+        self.assertFalse(users[1].is_private)
+
+    def test_home_skips_ads_and_suggestions(self) -> None:
+        ids = [p.id for p in parsers.extract_home(_load("gql_timeline.json"))]
+        self.assertEqual(ids, ["1001_10", "1002_20"])
+
+    def test_cursors(self) -> None:
+        conn = _load("gql_profile_posts_p1.json")["data"][
+            "xdt_api__v1__feed__user_timeline_graphql_connection"]
+        self.assertEqual(parsers.connection_cursor(conn), "GRID_P2")
+        conn["page_info"]["has_next_page"] = False
+        self.assertIsNone(parsers.connection_cursor(conn))
+        self.assertEqual(parsers.rest_cursor(_load("api_feed_saved.json")), "NEXTMAX_SAVED")
+        self.assertIsNone(parsers.rest_cursor(_load("api_feed_saved_p2.json")))
+
+
 class ExtractSavedTests(unittest.TestCase):
     def test_saved_posts_including_carousel(self) -> None:
         posts = parsers.extract_saved(_load("api_feed_saved.json"))

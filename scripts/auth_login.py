@@ -33,9 +33,11 @@ from instagram_sdk.auth import (  # noqa: E402
     DEFAULT_LOGIN_TIMEOUT_S,
     LOGIN_URL,
     browser_context_options,
+    browser_locale,
     fetch_logged_in_username,
     resolve_session_handle,
     save_storage_state,
+    user_agent_override,
     validate_handle,
     wait_for_instagram_login,
 )
@@ -97,6 +99,15 @@ def _launch_and_save(
         try:
             context = browser.new_context(**browser_context_options(browser.version))
             page = context.new_page()
+            # Same fingerprint as the server: sec-ch-ua* agree with the UA.
+            try:
+                cdp = context.new_cdp_session(page)
+                cdp.send(
+                    "Emulation.setUserAgentOverride",
+                    user_agent_override(browser.version, browser_locale()),
+                )
+            except PlaywrightError:
+                pass
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
             console.print(
                 f"[yellow]Log in to instagram.com in the browser window. "

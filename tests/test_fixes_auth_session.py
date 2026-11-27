@@ -15,9 +15,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from instagram_sdk import auth, browser as browser_mod  # noqa: E402
+from instagram_sdk import auth  # noqa: E402
 from instagram_sdk import server as server_mod  # noqa: E402
-from instagram_sdk.auth import SessionExpiredError  # noqa: E402
 
 
 class BrowserEnvTests(unittest.TestCase):
@@ -86,6 +85,38 @@ class ResolveSessionHandleTests(unittest.TestCase):
         self.assertIsNone(auth.fetch_logged_in_username(page, "1"))
 
 
+class ClientHintsTests(unittest.TestCase):
+    def test_brands_match_chromium_vectors_without_headless(self) -> None:
+        def header(major: int) -> str:
+            return ", ".join(
+                f'"{b["brand"]}";v="{b["version"]}"' for b in auth.greased_brands(major)
+            )
+
+        self.assertEqual(header(120), '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"')
+        self.assertEqual(header(123), '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"')
+        self.assertEqual(header(131), '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"')
+        self.assertEqual(header(147), '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"')
+
+    def test_metadata_is_coherent_with_ua_and_os(self) -> None:
+        meta = auth.client_hints_metadata(
+            "147.0.7727.15", "Linux", release="6.18.33.2-microsoft-standard-WSL2", machine="x86_64"
+        )
+        self.assertEqual(meta["platform"], "Linux")
+        self.assertEqual(meta["platformVersion"], "6.18.33")
+        self.assertEqual(meta["fullVersion"], "147.0.7727.15")
+        self.assertNotIn("Headless", json.dumps(meta))
+        full = {b["brand"]: b["version"] for b in meta["fullVersionList"]}
+        self.assertEqual(full["Google Chrome"], "147.0.7727.15")
+        self.assertEqual(full["Not.A/Brand"], "8.0.0.0")
+        mac = auth.client_hints_metadata("147.0.1.2", "Darwin", machine="arm64", mac_version="14.5")
+        self.assertEqual((mac["platform"], mac["platformVersion"], mac["architecture"]),
+                         ("macOS", "14.5.0", "arm"))
+        override = auth.user_agent_override("147.0.7727.15", "es-ES", "Windows")
+        self.assertIn("Windows NT 10.0", override["userAgent"])
+        self.assertEqual(override["platform"], "Win32")
+        self.assertEqual(override["acceptLanguage"], "es-ES")
+
+
 class PerCallSessionTests(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
@@ -103,32 +134,15 @@ class PerCallSessionTests(unittest.TestCase):
             "INSTAGRAM_SESSION_DIR": str(self.dir),
             "INSTAGRAM_SESSION_FILE": "",
             "INSTAGRAM_USERNAME": "",
+            "INSTAGRAM_STATE_DIR": str(self.dir / "state"),
         }
-        with mock.patch.dict(os.environ, env):
+        with mock.patch.dict(os.environ, env), mock.patch.object(server_mod, "_runtime", None):
             before = asyncio.run(server_mod.auth_status())
             self._write_session()
             after = asyncio.run(server_mod.auth_status())
-            handle = server_mod._resolve_own_handle()
         self.assertFalse(before["authenticated"])
         self.assertTrue(after["authenticated"])
-        self.assertEqual(handle, "carol")
-
-    def test_warm_context_is_reused_while_file_is_unchanged(self) -> None:
-        path = self._write_session()
-        session = browser_mod.BrowserSession(lambda: path)
-        session._context = sentinel = object()
-        session._loaded_fingerprint = browser_mod._fingerprint(path)
-        self.assertIs(asyncio.run(session._ensure_started()), sentinel)
-
-    def test_context_is_dropped_when_session_file_goes_away(self) -> None:
-        path = self._write_session()
-        session = browser_mod.BrowserSession(lambda: path)
-        session._context = mock.AsyncMock()
-        session._loaded_fingerprint = browser_mod._fingerprint(path)
-        path.unlink()
-        with self.assertRaises(SessionExpiredError):
-            asyncio.run(session._ensure_started())
-        self.assertIsNone(session._context)
+        self.assertEqual(after["handle"], "carol")
 
 
 class ClampLimitTests(unittest.TestCase):
@@ -138,11 +152,15 @@ class ClampLimitTests(unittest.TestCase):
         self.assertEqual(server_mod._clamp_limit(0), 1)
 
     def test_tool_passes_clamped_limit_and_documents_it(self) -> None:
-        with mock.patch.object(server_mod, "_browser") as fake, mock.patch.object(
-            server_mod.home, "fetch", new=mock.AsyncMock(return_value=[])
-        ) as fetch:
-            fake.page.return_value.__aenter__ = mock.AsyncMock()
-            fake.page.return_value.__aexit__ = mock.AsyncMock(return_value=False)
+        from instagram_sdk.cursors import PageResult
+
+        class FakeRuntime:
+            async def run(self, account, fn):
+                return await fn(object())
+
+        with mock.patch.object(server_mod, "get_runtime", return_value=FakeRuntime()), \
+                mock.patch.object(server_mod.home, "fetch_home_page",
+                                  new=mock.AsyncMock(return_value=PageResult())) as fetch:
             asyncio.run(server_mod.get_home_feed(limit=500))
         self.assertEqual(fetch.call_args.kwargs["limit"], server_mod.MAX_LIMIT)
         self.assertIn("capped at 50", server_mod.get_home_feed.__doc__)

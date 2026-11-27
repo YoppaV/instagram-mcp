@@ -13,7 +13,6 @@ import asyncio
 import sys
 import tempfile
 import unittest
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -56,10 +55,15 @@ def _video_item() -> MediaItem:
     )
 
 
-class FakeBrowser:
-    @asynccontextmanager
-    async def page(self) -> Any:
-        yield object()  # opaque — the resolver is mocked, never touches it
+class FakeRuntime:
+    async def run(self, account: Any, fn: Any) -> Any:
+        return await fn(object())  # the resolver is mocked, never touches it
+
+    def http_client(self) -> Any:
+        return object()
+
+    def download_semaphore(self) -> asyncio.Semaphore:
+        return asyncio.Semaphore(2)
 
 
 def _ok(content_type: str, data: bytes) -> FetchOutcome:
@@ -87,8 +91,8 @@ class DownloadMediaToolTests(unittest.TestCase):
     ) -> list[Any]:
         resolve = mock.AsyncMock(return_value=(shortcode, items))
         fetch = mock.AsyncMock(side_effect=outcomes)
-        with mock.patch.object(server_mod, "_browser", FakeBrowser()), \
-             mock.patch.object(server_mod, "_DOWNLOADS_DIR", self.tmp), \
+        with mock.patch.object(server_mod, "get_runtime", return_value=FakeRuntime()), \
+             mock.patch.dict("os.environ", {"INSTAGRAM_DOWNLOADS_DIR": str(self.tmp)}), \
              mock.patch.object(server_mod.media, "resolve_post_media", new=resolve), \
              mock.patch.object(server_mod.downloader, "fetch_bytes", new=fetch):
             return _run(
@@ -113,6 +117,7 @@ class DownloadMediaToolTests(unittest.TestCase):
         self.assertTrue(saved.exists())
         self.assertEqual(saved.name, "post_DYdWoL8gASP_00.jpg")
         self.assertEqual(saved.read_bytes(), TINY_JPEG)
+        self.assertEqual(list(self.tmp.glob("*.part")), [])  # atomic write
 
     def test_video_skipped_unless_opted_in(self) -> None:
         result = self._call((_video_item(),), outcomes=[])
@@ -187,6 +192,7 @@ class ResolvePostMediaTests(unittest.TestCase):
         self.assertEqual(len(media), 1)
         # The shortcode is extracted from the URL before fetching.
         self.assertEqual(fetch.call_args.kwargs["id_or_url"], "DYdWoL8gASP")
+        self.assertFalse(fetch.call_args.kwargs["with_views"])
 
     def test_raises_when_post_missing(self) -> None:
         fetch = mock.AsyncMock(return_value=None)

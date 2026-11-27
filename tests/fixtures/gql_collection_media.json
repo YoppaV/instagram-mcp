@@ -1,0 +1,82 @@
+{
+ "data": {
+  "fetch__MediaCollection": {
+   "id": "17900000000000001",
+   "name": "Recipes",
+   "media": {
+    "edges": [
+     {
+      "node": {
+       "pk": "7001",
+       "id": "7001_80",
+       "code": "CL1",
+       "media_type": 1,
+       "product_type": "feed",
+       "caption": {
+        "text": "caption CL1"
+       },
+       "like_count": 5,
+       "comment_count": 1,
+       "view_count": null,
+       "image_versions2": {
+        "candidates": [
+         {
+          "url": "https://cdn.example.com/7001.jpg",
+          "width": 1080,
+          "height": 1080
+         }
+        ]
+       },
+       "user": {
+        "pk": "80",
+        "id": "80",
+        "username": "frank",
+        "full_name": "Frank",
+        "is_verified": false,
+        "is_private": false,
+        "profile_pic_url": "https://cdn.example.com/frank.jpg"
+       }
+      }
+     },
+     {
+      "node": {
+       "pk": "7002",
+       "id": "7002_81",
+       "code": "CL2",
+       "media_type": 1,
+       "product_type": "feed",
+       "caption": {
+        "text": "caption CL2"
+       },
+       "like_count": 5,
+       "comment_count": 1,
+       "view_count": null,
+       "image_versions2": {
+        "candidates": [
+         {
+          "url": "https://cdn.example.com/7002.jpg",
+          "width": 1080,
+          "height": 1080
+         }
+        ]
+       },
+       "user": {
+        "pk": "81",
+        "id": "81",
+        "username": "grace",
+        "full_name": "Grace",
+        "is_verified": false,
+        "is_private": false,
+        "profile_pic_url": "https://cdn.example.com/grace.jpg"
+       }
+      }
+     }
+    ],
+    "page_info": {
+     "end_cursor": "COLL_NEXT",
+     "has_next_page": true
+    }
+   }
+  }
+ }
+}

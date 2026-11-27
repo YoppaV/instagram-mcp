@@ -1,0 +1,6 @@
+{
+ "message": "feedback_required",
+ "spam": true,
+ "feedback_message": "We restrict certain activity.",
+ "status": "fail"
+}

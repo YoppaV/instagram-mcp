@@ -1,55 +1,21 @@
-"""Shared id/username parsers, URL builders, and endpoint identifiers.
+"""Shared id/username parsers and URL builders.
 
-This is the single place to patch when Instagram rotates its endpoints — see
-the "Maintenance" section in ``README.md``.
-
-Instagram's web app drives almost everything through ``/api/graphql`` POST
-requests, distinguished by the ``fb_api_req_friendly_name`` form field — those
-names are the ``FN_*`` constants. A few feeds are still plain REST endpoints
-with a distinctive URL path — those are the ``FR_*`` constants. A single post
-page embeds its data in the server-rendered HTML — that is ``EMBED_POST_KEY``.
+The operations themselves (``doc_id``, friendly names, REST paths) live in
+``instagram_sdk.ops``. A single post page still embeds its data in the
+server-rendered HTML — that is ``EMBED_POST_KEY``.
 """
 
 from __future__ import annotations
 
-import math
 import re
 
 BASE = "https://www.instagram.com"
 
-# GraphQL operations — matched against the request's fb_api_req_friendly_name.
-# The home feed's first page is embedded in the HTML; this query paginates it.
-FN_TIMELINE = "PolarisFeedRootPaginationCachedQuery_subscribe"
-FN_PROFILE = "PolarisProfilePageContentQuery"
-# The profile grid: the first batch (~12 items) comes from
-# PolarisProfilePostsQuery; every scroll-driven page is
-# PolarisProfilePostsTabContentQuery_connection. Same response shape
-# (xdt_api__v1__feed__user_timeline_graphql_connection).
-FN_PROFILE_POSTS: tuple[str, ...] = (
-    "PolarisProfilePostsQuery",
-    "PolarisProfilePostsTabContentQuery_connection",
-)
-# The Reels tab fires two different friendly names: the first batch (~12
-# items) comes from PolarisProfileReelsTabContentQuery on initial render,
-# then each scroll-driven page is PolarisProfileReelsTabContentQuery_connection.
-# Both share the same response shape (data.fetch__XDTUserDict.clips_connection;
-# formerly xdt_api__v1__clips__user__connection_v2). The Reels tab is the only
-# profile surface whose media carry ``play_count``.
-FN_REELS: tuple[str, ...] = (
-    "PolarisProfileReelsTabContentQuery",
-    "PolarisProfileReelsTabContentQuery_connection",
-)
-FN_COLLECTIONS = "PolarisProfileSavedTabContentQuery"
-
-# REST feeds — matched against a substring of the response URL.
-FR_SAVED = "/api/v1/feed/saved/posts/"
-FR_COLLECTION_FEED = "/api/v1/feed/collection/"
-
 # A single post page server-renders its data into the HTML under this key.
 EMBED_POST_KEY = "xdt_api__v1__media__shortcode__web_info"
 
-# Hard ceiling on scroll iterations regardless of the requested limit.
-MAX_SCROLLS_CAP = 60
+# Instagram's base64 alphabet for shortcodes.
+_SHORTCODE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
 _USERNAME_RE = re.compile(r"^[A-Za-z0-9._]{1,30}$")
 # Canonical Instagram shortcodes are 11 chars, but the home feed occasionally
@@ -116,19 +82,13 @@ def collection_url(handle: str, collection_id: str) -> str:
     return f"{BASE}/{handle}/saved/{collection_id}/{collection_id}/"
 
 
-# Items a scroll step typically brings in. Most feeds serve about a dozen per
-# page; the Reels tab only loads one row (3 reels) per scroll step.
-ITEMS_PER_SCROLL = 10
-REELS_PER_SCROLL = 3
-
-
-def scroll_budget(limit: int | None, per_scroll: int = ITEMS_PER_SCROLL) -> int:
-    """How many scroll iterations to allow for a requested ``limit``.
-
-    ``per_scroll`` is how many items one scroll step usually yields; allow a
-    little slack, but never exceed ``MAX_SCROLLS_CAP`` — runaway scrolling is
-    exactly what trips automation defenses.
-    """
-    if not limit or limit <= 0:
-        return MAX_SCROLLS_CAP
-    return min(MAX_SCROLLS_CAP, math.ceil(limit / max(1, per_scroll)) + 4)
+def shortcode_to_pk(shortcode: str) -> str:
+    """Numeric media id from a shortcode (base 64 over its first 11 chars; checked against a real pair during discovery)."""
+    code = extract_shortcode(shortcode)[:11]
+    value = 0
+    for char in code:
+        index = _SHORTCODE_ALPHABET.find(char)
+        if index < 0:
+            raise ValueError(f"invalid shortcode character {char!r}")
+        value = value * 64 + index
+    return str(value)

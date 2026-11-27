@@ -1,0 +1,31 @@
+{
+ "data": {
+  "xdt_api__v1__fbsearch__topsearch_connection": {
+   "hashtags": [],
+   "places": [],
+   "rank_token": "r",
+   "users": [
+    {
+     "position": 0,
+     "user": {
+      "pk": "501",
+      "id": "501",
+      "username": "carolfan",
+      "full_name": "Carol Fan",
+      "is_verified": false
+     }
+    },
+    {
+     "position": 1,
+     "user": {
+      "pk": "500",
+      "id": "500",
+      "username": "Carol",
+      "full_name": "Carol Doe",
+      "is_verified": true
+     }
+    }
+   ]
+  }
+ }
+}
