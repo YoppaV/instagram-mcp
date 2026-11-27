@@ -238,5 +238,64 @@ class RetryKeepsCapTests(_MultiBase):
         self.assertEqual(made["n"], 20)
 
 
+class OwnIdWithoutDsUserIdTests(unittest.TestCase):
+    """5. ds_user_id can expire while the session works: the own id comes
+    from the page's actorID, and auth_status only needs a live sessionid."""
+
+    def test_viewer_id_from_actor_id_not_the_cookie(self) -> None:
+        from test_inpage import _client
+
+        from _fakes import FakeContext
+
+        client, page, _ = _client([])
+        # Session cookie set, ds_user_id gone (expired) — or stale.
+        for cookies in ({"sessionid": "S", "csrftoken": "C"},
+                        {"sessionid": "S", "csrftoken": "C", "ds_user_id": "111"}):
+            with self.subTest(cookies=sorted(cookies)):
+                client._actx.context = FakeContext(cookies)
+                client._actx.tokens = None
+                client._actx.last_html = None
+                self.assertEqual(_run(client.viewer_id()), "17841400000000001")
+
+    def test_cookie_is_the_fallback(self) -> None:
+        from test_inpage import _client
+
+        client, page, _ = _client([], html="<html>no tokens</html>")
+        self.assertEqual(_run(client.viewer_id()), "999")  # FakeContext's ds_user_id
+
+    def test_auth_status_with_expired_ds_user_id(self) -> None:
+        import time
+
+        from instagram_sdk.auth import session_summary
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "carol_instagram_state.json"
+            past, future = time.time() - 86400 * 90, time.time() + 86400 * 180
+
+            def write(session_expires):
+                path.write_text(json.dumps({"cookies": [
+                    {"name": "sessionid", "value": "S", "expires": session_expires},
+                    {"name": "ds_user_id", "value": "9", "expires": past}]}))
+                return session_summary(path)
+
+            ok = write(future)
+            self.assertTrue(ok["authenticated"])
+            self.assertEqual(ok["missing_cookies"], [])
+            self.assertEqual(ok["expired_cookies"], ["ds_user_id"])
+            dead = write(past)
+            self.assertFalse(dead["authenticated"])
+            self.assertEqual(dead["missing_cookies"], ["sessionid"])
+
+    def test_account_id_prefers_the_sidecar(self) -> None:
+        from instagram_sdk.accounts import build_meta, write_meta
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _session(Path(tmp))  # cookie ds_user_id = 9 (stale)
+            write_meta(path, build_meta(username="carol", user_id="42", locale="en-US",
+                                        timezone_id="Etc/UTC",
+                                        viewport={"width": 1, "height": 1}))
+            self.assertEqual(Account.from_session(path).user_id, "42")
+
+
 if __name__ == "__main__":
     unittest.main()

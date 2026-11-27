@@ -61,6 +61,14 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
 - **Presupuesto**: 150 peticiones/hora y 800/día por cuenta
   (`INSTAGRAM_MAX_REQUESTS_PER_HOUR` / `_PER_DAY`), persistido; al pasarlo,
   `BudgetExceededError` con la espera. 3 fallos seguidos en 10 min → 15 min de pausa.
+  Las tools devuelven lo leído con `stopped: "budget"` y cursor; las funciones de
+  librería que devuelven lista lanzan `BudgetExceededError` con lo leído en `.partial`.
+- **Estado en cerrado**: un fichero de estado ilegible o corrupto, o un
+  `INSTAGRAM_STATE_DIR` no escribible, dan `StateUnavailableError` sin red (salvo
+  `INSTAGRAM_ALLOW_DEGRADED_STATE=1`).
+- **Id propio**: sale del `actorID` del HTML; la cookie `ds_user_id` puede caducar
+  meses antes que la sesión y solo es respaldo. `auth_status` exige solo un
+  `sessionid` vigente.
 - **`download_media`** re-fetchea el post fresco antes de descargar porque las URLs
   del CDN de Instagram son firmadas y efímeras; escribe vía temporal + rename en
   `<downloads>/<cuenta>/post_<shortcode>_<pk>_<NN>.<ext>` (el `pk` evita que dos

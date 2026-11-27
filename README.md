@@ -242,7 +242,10 @@ asyncio.run(main())
 The `fetch_*` functions keep returning plain lists; the `fetch_*_page`
 variants (what the tools use) return a `PageResult` with a resumable
 `CursorState`. Library calls share the account's hourly/daily budget and the
-cross-process lock with the MCP server.
+cross-process lock with the MCP server. When the budget runs out midway, the
+list-returning `fetch_*` functions raise `BudgetExceededError` instead of
+returning a shorter list; what was already read is in `exc.partial` (and the
+resume point in `exc.next`), so nothing hydrated is lost.
 
 ## Configuration
 
@@ -259,6 +262,7 @@ cross-process lock with the MCP server.
 | `INSTAGRAM_DOWNLOADS_DIR` | `~/.instagram-mcp/downloads` | Root for `download_media`: files go to `<root>/<account>/post_<shortcode>_<pk>_<NN>.<ext>`. |
 | `INSTAGRAM_STATE_DIR` | `~/.instagram-mcp/state` | Persistent state per account (block state, request budget), the cross-process lock and cached user ids. |
 | `INSTAGRAM_MAX_REQUESTS_PER_HOUR` / `_PER_DAY` | `150` / `800` | Request budget per account (sliding windows, persisted). `0` disables that window. |
+| `INSTAGRAM_ALLOW_DEGRADED_STATE` | `false` | `true` lets calls run when `INSTAGRAM_STATE_DIR` can't be written (no cross-process lock, budget only in memory). Off: such calls are refused. |
 | `INSTAGRAM_BLOCK_JS` | `true` | `false` lets instagram.com's scripts run in the tab (fallback mode, more RAM, not measured). |
 | `BROWSER_CHANNEL` | — | Optional Playwright channel (e.g. `chromium` for the new headless). |
 | `INSTAGRAM_LOG_LEVEL` | `WARNING` | Server log level (logs go to stderr). |
@@ -404,6 +408,14 @@ every instagram.com request locally (`RUN_BROWSER_TESTS=1`), and
 - **`BudgetExceededError`** — our own cap was hit: 20 requests per call (ask
   for a smaller `limit`, or continue with `next_cursor`) or the account's
   hourly/daily budget (the message says how long to wait).
+- **`StateUnavailableError`** — a state file is unreadable/corrupt or
+  `INSTAGRAM_STATE_DIR` is not writable. Calls refuse to reach Instagram
+  rather than ignore a block or run without the lock and budget. Fix the
+  permissions; a corrupt file is rebuilt by
+  `venv/bin/python -m scripts.account_state --clear <handle>`.
+- **`auth_status` shows `expired_cookies: ["ds_user_id"]`** — harmless:
+  that cookie can expire months before the session. Only a live `sessionid`
+  is required; the account id comes from the page (`actorID`).
 - **`AmbiguousAccountError`** — several accounts are logged in and none is
   the default: pass `account` or set `INSTAGRAM_DEFAULT_ACCOUNT`.
 - **`UnknownAccountError`** — the `account` (or `INSTAGRAM_DEFAULT_ACCOUNT`)

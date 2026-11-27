@@ -119,6 +119,10 @@ venv/bin/python -m black --check src tests scripts
   a la vez desde la misma IP es lo que Instagram caza. El lock no cruza máquinas.
 - **Presupuesto y frenos** (`accounts.Budget`, `GLOBAL_COOLDOWN_S`, freno por fallos)
   — topes propios; no los subas sin consultar.
+- **El estado falla en cerrado** — un fichero de estado ilegible nunca se lee como
+  "sin bloqueo" (`StateUnavailableError`). No lo cambies a "ignorar y seguir".
+- **`ds_user_id` no identifica la cuenta**: puede caducar con la sesión viva. El id
+  propio es `InPageClient.viewer_id()` (sale de `actorID`).
 - **Captcha/challenge → PARA.** `guard` lo convierte en `AccountBlockedError` sin
   reintento y la cuenta queda retenida. No añadas reintentos tras una señal ni
   una tool para desbloquear (el modelo entraría en bucle).

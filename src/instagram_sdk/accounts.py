@@ -195,11 +195,15 @@ class Account:
 
     @classmethod
     def from_session(cls, path: Path, *, fallback: str = "default") -> "Account":
+        meta = read_meta(path)
+        # The sidecar's id (recorded at login) first: the ds_user_id cookie
+        # may be expired even while the session works.
+        meta_id = meta.get("user_id")
         return cls(
             handle=handle_for_session(path, fallback),
             session_path=path,
-            user_id=read_session_user_id(path),
-            meta=read_meta(path),
+            user_id=str(meta_id) if meta_id else read_session_user_id(path),
+            meta=meta,
         )
 
     @property

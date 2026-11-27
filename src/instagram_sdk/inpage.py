@@ -162,6 +162,10 @@ def _graphql_detail(body: Any) -> str:
     return "response is not JSON"
 
 
+def _is_user_id(value: str | None) -> bool:
+    return bool(value) and value.isdigit() and value != "0"
+
+
 class InPageClient:
     def __init__(
         self,
@@ -197,6 +201,18 @@ class InPageClient:
         return {c.get("name", ""): c.get("value", "") for c in jar}
 
     async def viewer_id(self) -> str | None:
+        """The logged-in account's numeric id.
+
+        From the page's ``actorID`` (loading the page if needed); the
+        ``ds_user_id`` cookie is only a fallback, because it can expire long
+        before the session does.
+        """
+        tokens = self._actx.tokens
+        if tokens is None or not _is_user_id(tokens.actor_id):
+            await self.bootstrap()
+            tokens = self._actx.tokens
+        if tokens is not None and _is_user_id(tokens.actor_id):
+            return tokens.actor_id
         return (await self.cookies()).get("ds_user_id") or None
 
     def recent_html(self, path: str, max_age_s: float) -> str | None:

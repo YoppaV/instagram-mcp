@@ -151,8 +151,10 @@ async def auth_status(account: str | None = None) -> dict[str, Any]:
 
     Returns, for ``account`` (or the default account when omitted): the
     session file path, the handle, last-modified timestamp (proxy for last
-    login), an ``authenticated`` flag based on the presence of ``sessionid`` +
-    ``ds_user_id`` cookies, ``user_id``, ``is_default`` and ``default_source``
+    login), an ``authenticated`` flag based on a live (unexpired)
+    ``sessionid`` cookie, ``expired_cookies`` (informational: ``ds_user_id``
+    may expire long before the session and is not required), ``user_id``,
+    ``is_default`` and ``default_source``
     (why it is the default), and ``state`` (``ok`` | ``blocked`` |
     ``cooldown`` | ``expired``) with ``block`` (kind, detail, until) if
     Instagram stopped the account earlier: a held account fails fast, without
@@ -180,6 +182,7 @@ async def auth_status(account: str | None = None) -> dict[str, Any]:
             "session_path": None,
             "last_login": None,
             "missing_cookies": list(REQUIRED_COOKIES),
+            "expired_cookies": [],
             "is_default": False,
             "default_source": None,
             "user_id": None,
