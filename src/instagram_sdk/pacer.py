@@ -70,11 +70,15 @@ class Pacer:
                 retry_after_s=0.0,
             )
 
-    async def before_request(self, budget_class: str = "general") -> None:
-        """Wait the right pause, then count the request. Raises on the cap."""
-        self._check_cap()
+    async def before_request(self, budget_class: str = "general", cost: int = 1) -> None:
+        """Wait the right pause, then count the request. Raises on the cap.
+
+        ``cost`` > 1 charges a heavier action as several requests (a self-heal
+        page load counts as 10).
+        """
+        self._check_cap(cost)
         if self.budget is not None:
-            self.budget.charge(budget_class)
+            self.budget.charge(budget_class, cost)
         rng = PRE_REQUEST_PAUSE_S if self._first_of_call else BETWEEN_REQUESTS_PAUSE_S
         pause = self._uniform(*rng)
         if self._last_request_at is not None:
@@ -82,7 +86,7 @@ class Pacer:
             pause = max(pause, MIN_GAP_S - since)
         if pause > 0:
             await self._sleep(pause)
-        self.requests_this_call += 1
+        self.requests_this_call += cost
         self._first_of_call = False
         self._last_request_at = self._clock()
         self.last_request_wall = time.time()

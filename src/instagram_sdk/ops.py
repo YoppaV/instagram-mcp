@@ -32,7 +32,7 @@ CLIENT_PARAMS = frozenset({"ig_did"})
 
 @dataclass(frozen=True)
 class HealRecipe:
-    """How the (future) self-heal would rediscover an op. Unused in this PR."""
+    """Page whose JS sends this op: how ``opsheal.Healer`` rediscovers it."""
 
     path: str
     action: str = "none"  # "none" | "scroll"

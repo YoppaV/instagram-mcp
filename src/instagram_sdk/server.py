@@ -53,7 +53,16 @@ from instagram_sdk.settings import Settings
 
 load_dotenv()
 
-mcp = FastMCP("instagram-mcp")
+# FastMCP configures the root logger (INFO by default) when it is built, which
+# made httpx log every CDN download URL — signed, with its query — to stderr.
+# Pass our level instead, and keep the HTTP libraries at WARNING whatever it is.
+_LOG_LEVEL = os.getenv("INSTAGRAM_LOG_LEVEL", "WARNING").strip().upper() or "WARNING"
+if _LOG_LEVEL not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+    _LOG_LEVEL = "WARNING"
+for _noisy in ("httpx", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
+mcp = FastMCP("instagram-mcp", log_level=_LOG_LEVEL)
 
 # Hard cap on every ``limit``: more posts means more requests on the account.
 # Use ``next_cursor`` to read further.
@@ -520,7 +529,7 @@ def main() -> None:
     # stdout is the MCP channel in stdio mode: logs go to stderr.
     logging.basicConfig(
         stream=sys.stderr,
-        level=os.getenv("INSTAGRAM_LOG_LEVEL", "WARNING").upper(),
+        level=_LOG_LEVEL,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
     import anyio

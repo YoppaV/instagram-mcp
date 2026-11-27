@@ -43,6 +43,7 @@ from .errors import (
 from .guard import BlockSignal
 from .inpage import InPageClient
 from .locks import FileLock
+from .opsheal import Healer, OpsStore
 from .pacer import MAX_REQUESTS_PER_CALL
 from .settings import Settings
 
@@ -78,6 +79,11 @@ class Runtime:
         )
         self.state = AccountStateStore(settings.state_dir)
         self.user_ids = UserIdCache(settings.state_dir / "user_ids.json")
+        self.healer = Healer(
+            OpsStore(settings.state_dir / "ops_cache.json"),
+            enabled=settings.self_heal,
+            debug_dir=settings.state_dir / "debug",
+        )
         self._http_client: Any = None
         self._download_sem: asyncio.Semaphore | None = None
 
@@ -185,7 +191,8 @@ class Runtime:
                 finally:
                     await self.browser.close_account(acct.handle)
 
-            client = InPageClient(actx, on_block=on_block, user_ids=self.user_ids)
+            client = InPageClient(actx, on_block=on_block, user_ids=self.user_ids,
+                                  healer=self.healer)
             client.new_call()
             actx.pacer.requests_this_call = carried_requests
             actx.pacer.budget = budget

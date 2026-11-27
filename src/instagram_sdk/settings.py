@@ -67,6 +67,7 @@ class Settings:
     max_requests_per_hour: int = DEFAULT_MAX_PER_HOUR
     max_requests_per_day: int = DEFAULT_MAX_PER_DAY
     allow_degraded_state: bool = False
+    self_heal: bool = True
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -86,6 +87,7 @@ class Settings:
             max_requests_per_hour=_env_int("INSTAGRAM_MAX_REQUESTS_PER_HOUR", DEFAULT_MAX_PER_HOUR),
             max_requests_per_day=_env_int("INSTAGRAM_MAX_REQUESTS_PER_DAY", DEFAULT_MAX_PER_DAY),
             allow_degraded_state=_env_bool("INSTAGRAM_ALLOW_DEGRADED_STATE", False),
+            self_heal=_env_bool("INSTAGRAM_SELF_HEAL", True),
         )
 
     def candidate_session_dirs(self) -> list[Path]:
