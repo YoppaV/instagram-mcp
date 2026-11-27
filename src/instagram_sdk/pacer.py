@@ -32,6 +32,10 @@ RETRY_PAUSE_S: tuple[float, float] = (5.0, 10.0)
 MIN_GAP_S = 1.5
 MAX_REQUESTS_PER_CALL = 20
 ACCOUNT_SWITCH_PAUSE_S: tuple[float, float] = (5.0, 10.0)
+# Followers/following: the operation that draws the most blocks (§10.3).
+FOLLOW_PAGE_PAUSE_S: tuple[float, float] = (4.0, 9.0)
+FOLLOW_MIN_GAP_S = 30.0
+FOLLOW_BUDGET_CLASS = "follow"
 
 
 class Pacer:
@@ -56,10 +60,15 @@ class Pacer:
         self.budget: "Budget | None" = None
         # Wall-clock time of the last request, persisted by the runtime.
         self.last_request_wall: float | None = None
+        # Followers/following pacing: page pause inside a call and a minimum
+        # gap between calls (kept per account context, i.e. per process).
+        self._last_follow_at: float | None = None
+        self._follow_this_call = False
 
     def new_call(self) -> None:
         self.requests_this_call = 0
         self._first_of_call = True
+        self._follow_this_call = False
 
     def _check_cap(self, cost: int = 1) -> None:
         cap = self.max_requests_per_call
@@ -84,12 +93,30 @@ class Pacer:
         if self._last_request_at is not None:
             since = self._clock() - self._last_request_at
             pause = max(pause, MIN_GAP_S - since)
+        if budget_class == FOLLOW_BUDGET_CLASS:
+            pause = max(pause, self._follow_pause())
         if pause > 0:
             await self._sleep(pause)
         self.requests_this_call += cost
         self._first_of_call = False
         self._last_request_at = self._clock()
         self.last_request_wall = time.time()
+        if budget_class == FOLLOW_BUDGET_CLASS:
+            self._last_follow_at = self._last_request_at
+            self._follow_this_call = True
+
+    def _follow_pause(self) -> float:
+        """Extra wait before a followers/following page.
+
+        Between pages of one call: ``FOLLOW_PAGE_PAUSE_S``. First page of a
+        call: whatever is left of ``FOLLOW_MIN_GAP_S`` since the last
+        followers/following request of this account.
+        """
+        if self._follow_this_call:
+            return self._uniform(*FOLLOW_PAGE_PAUSE_S)
+        if self._last_follow_at is None:
+            return 0.0
+        return FOLLOW_MIN_GAP_S - (self._clock() - self._last_follow_at)
 
     async def switch_pause(self) -> None:
         """Pause before driving a different account than the last one."""

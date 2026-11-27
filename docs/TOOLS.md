@@ -1,7 +1,7 @@
 # TOOLS — instagram-mcp
 
-Referencia exhaustiva de las **10 tools** que expone `server.py` (9 read-only +
-`download_media`). Todas devuelven JSON (dataclasses → dict); `download_media`
+Referencia exhaustiva de las **18 tools** que expone `server.py` (14 read-only,
+`download_media` y 3 de descarga masiva). Todas devuelven JSON (dataclasses → dict); `download_media`
 además devuelve objetos `Image` inline. Router y arquitectura en `../AGENTS.md`.
 
 Todo `limit` tiene un tope de 50: un valor mayor se recorta, no da error. Cada
@@ -32,6 +32,8 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
 | `start_bulk_download` | `source` (`saved`/`collection`/`user_posts`), `target?`, `download_videos=false`, `mode=auto`, `known_stop=8`, `max_pages?`, `max_posts?` | lanza un trabajo en segundo plano: una página del feed por lote (`saved_posts`, `collection_feed`/`saved_collection` o `profile_posts_*`), bytes del CDN fuera del lock |
 | `bulk_download_status` | `job_id?`, `account?` | sin red; lee el manifiesto |
 | `cancel_bulk_download` | `job_id` | sin red; marca el trabajo para que pare |
+| `get_followers` (sobre) | `username`, `limit=24`, `cursor?` | `search_box` (id) + `profile_info` (visibilidad; no si es la propia cuenta ni con cursor) + REST `followers` |
+| `get_following` (sobre) | `username`, `limit=24`, `cursor?` | igual con REST `following` (cursor = desplazamiento numérico) |
 
 ## Notas
 - **Transporte**: cada petición es un `fetch` dentro de una pestaña fija de
@@ -95,6 +97,14 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
   así que `search_hashtag` es la búsqueda de `#tag` (resultados "top", casi todo
   reels). Un uuid de sesión por búsqueda viaja dentro del cursor. Clase `search`
   (30/h, 150/día): pocas búsquedas seguidas.
+- **Seguidores y seguidos** (lo que más vigila Instagram): 12 usuarios por página,
+  como mucho 5 páginas (60 usuarios) por llamada; la tool no encadena sola, el
+  llamante decide con `next_cursor`. Clase de presupuesto `follow` compartida por
+  las dos: 30 páginas/hora y 100/día por cuenta (además del general). Pausa de
+  4-9 s entre páginas y mínimo de 30 s entre llamadas de la misma cuenta (en
+  memoria del proceso). Una cuenta privada que no sigues → `PrivateAccountError`
+  (es `ValueError`) sin pedir la lista. Exportar seguidores de cuentas grandes no
+  es un objetivo.
 
 ## Debugging (resumen; detalle en el [README](../README.md#troubleshooting))
 - `AccountBlockedError` → parar; ver `kind`. Rate limit: esperar. Resto: resolver

@@ -44,7 +44,7 @@ Piezas clave:
 ## Folder structure
 ```
 src/instagram_sdk/
-├── server.py      FastMCP entrypoint — 10 tools (9 read-only + download_media)
+├── server.py      FastMCP entrypoint — 18 tools (14 read-only, download_media and 3 for bulk downloads)
 ├── runtime.py     Runtime.run: cuenta → estado → lock global → contexto → cliente
 ├── browser.py     BrowserManager + BrowserSession (fachada de librería)
 ├── inpage.py      InPageClient (fetch en página) + clasificación de respuestas
@@ -68,7 +68,7 @@ scripts/account_state.py  ver / limpiar el estado de bloqueo (no es tool MCP)
 scripts/bulk_download.py  la descarga masiva desde terminal (mismo trabajo que la tool)
 tests/                    unittest stdlib, fixture-driven, sin red ni navegador real
 tests/fixtures/           sintéticas/anonimizadas (gql_*, api_*, err_*, *.html)
-docs/TOOLS.md             tabla de las 10 tools y sus operaciones
+docs/TOOLS.md             tabla de las 18 tools y sus operaciones
 ```
 
 ## Comandos
@@ -158,7 +158,7 @@ read-only o el pacing, DETENTE y consulta — no lo cambies en silencio.
   de rotación de `doc_id` + lecciones de endpoint.
 - `.claude/rules/security.md` (paths: src/**, scripts/**, tests/fixtures/**) —
   fichero de sesión, `.env`, fixtures a anonimizar.
-- `docs/TOOLS.md` — tabla exhaustiva de las 10 tools, cuentas y cursores.
+- `docs/TOOLS.md` — tabla exhaustiva de las 18 tools, cuentas y cursores.
 - Skills globales (referencia por nombre, NO duplicar):
   `mcp-readonly-server` (forma server/auth/sesión/test/captcha de los 7 MCP),
   `playwright-intercept` (navegar+interceptar JSON vs forjar requests),

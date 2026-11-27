@@ -40,12 +40,14 @@ HTTP.
 | `start_bulk_download` | `source` (`saved` \| `collection` \| `user_posts`), `target`, `download_videos`, `mode`, `known_stop`, `max_pages`, `max_posts`, `account` | job status (starts a background job) |
 | `bulk_download_status` | `job_id` (optional), `account` | `{jobs: [...]}` (no network) |
 | `cancel_bulk_download` | `job_id` | job status (no network) |
+| `get_followers` | `username`, `limit` (default 24), `cursor`, `account` | page of users |
+| `get_following` | `username`, `limit` (default 24), `cursor`, `account` | page of users |
 
 Tools return plain JSON (dataclasses serialized to dicts). `download_media`
 additionally returns inline `Image` objects for any image bytes it fetched.
 Every `limit` is capped at 50: a larger value is clamped, not rejected.
 
-**Pages.** The four list tools marked "page" return
+**Pages.** The list tools marked "page" return
 `{"items": [...], "next_cursor": "..." | null, "stopped": "end" | "limit" | "page_cap" | "budget"}`.
 Pass `next_cursor` back as `cursor` (with the same other arguments) to read
 the next items, with no overlap. The cursor is opaque and stateless: it works
@@ -55,6 +57,13 @@ different tool, account or query.
 **Accounts.** Every tool takes an optional `account` (a handle from
 `list_accounts`). Without it the default account is used: see
 [Several accounts](#several-accounts).
+
+**Followers / following.** The request Instagram watches most, so it is held
+tighter: 12 users per page, at most 5 pages per call (it never chains on its
+own), 30 s between calls, and its own budget of 30 pages per hour and 100 per
+day per account. A private account you do not follow fails with a clear error
+before the list is requested. Exporting the followers of large accounts is not
+a goal.
 
 ### Bulk downloads
 
@@ -347,7 +356,7 @@ day by default, persisted in `INSTAGRAM_STATE_DIR`); going over it raises
 
 ```
 src/instagram_sdk/
-├── server.py      FastMCP entrypoint — 10 tools (9 read-only + download_media)
+├── server.py      FastMCP entrypoint — 18 tools (14 read-only, download_media and 3 for bulk downloads)
 ├── runtime.py     Runtime.run(): resolve account → state check → global lock
 │                  (process + file) → context → call → persist budget/state
 ├── browser.py     BrowserManager (1 Chromium, 1 context + fixed tab per account,
@@ -418,6 +427,7 @@ Current map (verified November 2026, web revision 1056444526):
 | `get_user_posts` | `profile_posts_first` + `profile_posts_page` (+ reels for views) |
 | `get_user_reels` | `search_box` + `profile_reels_first` + `profile_reels_page` |
 | `get_post` / `download_media` | `/p/<shortcode>/` HTML, key `EMBED_POST_KEY` |
+| `get_followers` / `get_following` | `search_box` + `profile_info` (privacy check) + REST `followers` / `following` |
 
 ### Self-heal (automatic)
 

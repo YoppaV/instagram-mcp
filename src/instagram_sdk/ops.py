@@ -397,6 +397,14 @@ _REST_OPS: tuple[RestOp, ...] = (
     # 2026-11-27) and carries video_versions/taken_at; used first (D3/R3).
     RestOp(name="collection_feed", path="/api/v1/feed/collection/{collection_id}/posts/",
            status="V"),
+    # Followers / following (§10.3): 12 per page like the web, own budget class.
+    # Followers' next_max_id is opaque; following's is a numeric offset ("12").
+    RestOp(name="followers", path="/api/v1/friendships/{user_id}/followers/",
+           query={"count": "12", "search_surface": "follow_list_page"},
+           items_key="users", more_key="has_more", budget_class="follow", status="V"),
+    RestOp(name="following", path="/api/v1/friendships/{user_id}/following/",
+           query={"count": "12"},
+           items_key="users", more_key="has_more", budget_class="follow", status="C"),
 )
 
 
