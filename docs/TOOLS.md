@@ -120,6 +120,9 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
   espera (`waiting`) si invadiría la reserva de 40/h o 150/día. Una señal de
   Instagram (bloqueo, challenge, sesión caducada) termina el trabajo en `error`,
   sin reintentos. Dos `OperationFailedError` seguidos, también.
+  Un estado inutilizable (`StateUnavailableError`, el runtime falla en cerrado) también
+  termina en `error`. Si aun así se agota el presupuesto (`BudgetExceededError`), el
+  trabajo para como `partial` conservando el cursor, con la espera en `error`.
 - **Modos**: `auto` (primera pasada completa con cursor guardado por página; luego
   cabeza incremental que para tras `known_stop` posts conocidos seguidos y, si la
   primera pasada quedó a medias, la continúa desde el cursor; si ese cursor

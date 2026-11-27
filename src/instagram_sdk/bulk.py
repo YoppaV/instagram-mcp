@@ -16,7 +16,11 @@ hourly budget), so it runs as a **background job** in small batches:
   ``DAILY_RESERVE`` requests free for interactive use and waits (status
   ``waiting``) when it would eat into them. It never loosens the pacer.
 * any Instagram signal (block, challenge, expired session) ends the job with
-  ``status="error"``; nothing retries after a signal.
+  ``status="error"``; nothing retries after a signal. So does an unusable
+  state directory (``StateUnavailableError``: the runtime fails closed).
+* if the budget still runs out (``BudgetExceededError``: other tools used
+  it), the job stops as ``partial`` with the resume cursor kept and
+  ``retry_after_s`` in ``error``; start it again later to continue.
 
 What was already saved is in the per-account manifest (``manifest.py``,
 keyed by post ``pk`` + media index), shared by every source. Walks go newest
@@ -51,7 +55,7 @@ from typing import Any, Awaitable, Callable
 
 from . import downloader
 from .accounts import DAY_S, HOUR_S
-from .cursors import CursorState, PageResult, paginate
+from .cursors import STOP_BUDGET, CursorState, PageResult, paginate
 from .endpoints import media as media_ep
 from .endpoints import saved
 from .endpoints._ids import normalize_username
@@ -61,6 +65,7 @@ from .errors import (
     BudgetExceededError,
     OperationFailedError,
     SessionExpiredError,
+    StateUnavailableError,
 )
 from .locks import FileLock
 from .manifest import (
@@ -94,6 +99,16 @@ FINAL_STATES = ("done", "partial", "cancelled", "error", "interrupted")
 
 _COUNTER_KEYS = ("pages", "posts_seen", "posts_known", "posts_new", "downloaded",
                  "adopted", "skipped", "failed", "bytes", "fallback_resolves")
+
+
+class _BudgetStop(Exception):
+    """Internal: the account budget ran out; the job ends ``partial``."""
+
+    def __init__(self, cause: BaseException | None) -> None:
+        wait = getattr(cause, "retry_after_s", 0.0) or 0.0
+        self.message = (f"budget: {cause or 'request budget reached'}; resume point kept, "
+                        f"start again in ~{int(wait)} s")
+        super().__init__(self.message)
 
 
 class BulkJobBusyError(RuntimeError):
@@ -293,7 +308,10 @@ class BulkJob:
             final = self.status()
             self._release()
             raise
-        except (AccountBlockedError, SessionExpiredError, AccountError) as exc:
+        except _BudgetStop as stop:
+            self._finish("partial", error=stop.message)
+        except (AccountBlockedError, SessionExpiredError, AccountError,
+                StateUnavailableError) as exc:
             self._finish("error", error=str(exc))
         except (OperationFailedError, ValueError) as exc:
             self._finish("error", error=str(exc))
@@ -405,14 +423,11 @@ class BulkJob:
                 page, extra = await self.runtime.run(
                     self.account, lambda ig: self._read_batch(ig, upstream))
             except BudgetExceededError as exc:
-                wait = max(30.0, float(exc.retry_after_s or 0.0))
-                self._save(status="waiting", wait_until=self._clock() + wait,
-                           error=f"waiting: {exc}")
-                if await self._wait(wait):
-                    return "cancelled"
-                self._save(status="running", wait_until=None, error=None)
-                continue
-            except (AccountBlockedError, SessionExpiredError, AccountError):
+                # Nothing of this page was processed: the saved cursor (start
+                # of this page, or the previous page's next) is the resume point.
+                raise _BudgetStop(exc) from exc
+            except (AccountBlockedError, SessionExpiredError, AccountError,
+                    StateUnavailableError):
                 raise
             except OperationFailedError as exc:
                 if phase == "backfill" and first_page and upstream:
@@ -454,6 +469,11 @@ class BulkJob:
                 self._save()
 
             nxt = page.next.upstream if page.next else None
+            if page.stopped == STOP_BUDGET:
+                # Cut by the budget after some items: resume at ``page.next``.
+                if phase != "head":
+                    self._save(cursor=_cursor_json(nxt))
+                raise _BudgetStop(page.error)
             if phase != "head":
                 self._save(cursor=_cursor_json(nxt))
             if nxt is None:
@@ -479,6 +499,9 @@ class BulkJob:
                     resolved += 1
                 except ValueError:
                     continue
+                except BudgetExceededError:
+                    # Keep the page already read; the video is retried later.
+                    break
             page.items = items
         return page, resolved
 

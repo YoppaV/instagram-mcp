@@ -77,6 +77,9 @@ streamed to disk through a temporary file, so videos (opt-in,
 - `max_pages` / `max_posts` cap one run (status `partial`; start again to
   continue). If the MCP server stops, the job shows as `interrupted` and the
   same call resumes it. One job per account at a time.
+- If the budget still runs out (other tools used it), the job stops as
+  `partial` with its resume point kept; an Instagram signal or an unusable
+  state directory ends it as `error`.
 - For long first downloads, the same job runs from a terminal (it shares
   the lock, budget and manifest with the MCP servers):
 

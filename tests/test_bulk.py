@@ -27,7 +27,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _fakes import FakeClient  # noqa: E402
 
 from instagram_sdk import bulk, downloader  # noqa: E402
-from instagram_sdk.errors import AccountBlockedError, OperationFailedError  # noqa: E402
+from instagram_sdk.errors import (  # noqa: E402
+    AccountBlockedError,
+    BudgetExceededError,
+    OperationFailedError,
+    StateUnavailableError,
+)
 from instagram_sdk.manifest import Manifest, manifest_path  # noqa: E402
 from instagram_sdk.parsers import parse_post  # noqa: E402
 
@@ -384,6 +389,46 @@ class TestControl(BulkTestBase):
         self.assertEqual(out["status"], "error")
         self.assertIn("rate_limited", out["error"])
         self.assertEqual(rt.runs, 1)
+
+    def test_budget_error_stops_partial_keeping_cursor(self) -> None:
+        p1 = _saved_page([_node("101", "AaA1")], "P2")
+        cut = BudgetExceededError("hourly budget of 150 reached", retry_after_s=600,
+                                  partial=[], next=None)
+        rt = FakeRuntime(FakeClient(rest={"saved_posts": [p1, cut]}))
+        out = _run(self.job(rt).run())
+        self.assertEqual(out["status"], "partial")
+        self.assertIn("budget", out["error"])
+        self.assertIn("600", out["error"])
+        self.assertTrue(out["resumable"])
+        self.assertEqual(rt.runs, 2)  # no retry loop after the cut
+        # Resuming continues at P2, not from the top.
+        p2 = _saved_page([_node("103", "AaA3")], None)
+        rt2 = FakeRuntime(FakeClient(rest={"saved_posts": [p1, p2]}))
+        out2 = _run(self.job(rt2, known_stop=1).run())
+        self.assertEqual(out2["status"], "done")
+        queries = [c[2]["query"].get("max_id") for c in rt2.client.calls if c[0] == "rest"]
+        self.assertEqual(queries, [None, "P2"])
+
+    def test_state_unavailable_is_error_and_keeps_cursor(self) -> None:
+        p1 = _saved_page([_node("101", "AaA1")], "P2")
+        err = StateUnavailableError("cannot write state")
+        rt = FakeRuntime(FakeClient(rest={"saved_posts": [p1, err]}))
+        out = _run(self.job(rt).run())
+        self.assertEqual(out["status"], "error")
+        self.assertIn("cannot write state", out["error"])
+        self.assertTrue(out["resumable"])
+        self.assertEqual(rt.runs, 2)
+
+    def test_budget_cut_during_video_fallback_keeps_page(self) -> None:
+        page = _saved_page([_node("104", "AaA4", kind="video_nourl"),
+                            _node("105", "AaA5")], None)
+        rt = FakeRuntime(FakeClient(rest={"saved_posts": [page]}))
+        cut = mock.AsyncMock(side_effect=BudgetExceededError("cap", retry_after_s=60))
+        with mock.patch.object(bulk.media_ep, "resolve_post_for_download", cut):
+            out = _run(self.job(rt, download_videos=True).run())
+        self.assertEqual(out["status"], "done")
+        self.assertEqual(self.files(), ["post_AaA5_105_00.jpg"])
+        self.assertEqual(out["this_run"]["failed"], 1)  # video retried on a later run
 
     def test_waits_while_budget_is_in_reserve(self) -> None:
         rt = FakeRuntime(FakeClient(rest={"saved_posts": [_saved_page([], None)]}))
