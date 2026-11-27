@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..models import MediaItem
+from ..models import MediaItem, Post
 from . import post
 from ._ids import extract_shortcode
 
@@ -32,3 +32,16 @@ async def resolve_post_media(ig: Any, *, id_or_url: str) -> Resolved:
             "private, or the page carried no post data."
         )
     return result.shortcode, result.media
+
+
+async def resolve_post_for_download(ig: Any, *, id_or_url: str) -> Post:
+    """Like ``resolve_post_media`` but returns the whole ``Post`` (its ``pk``
+    names the saved files)."""
+    shortcode = extract_shortcode(id_or_url)
+    result = await post.fetch(ig, id_or_url=shortcode, with_views=False)
+    if result is None:
+        raise ValueError(
+            f"Post {id_or_url!r} could not be loaded — it may be deleted, "
+            "private, or the page carried no post data."
+        )
+    return result

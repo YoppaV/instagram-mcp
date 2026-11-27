@@ -2,9 +2,12 @@
 
 Instagram authentication is cookie-based. The ``storage_state`` JSON written by
 ``scripts/auth_login.py`` carries the logged-in cookies; the MCP server loads
-it into a browser context on every tool call. Two cookies only exist while a
-session is valid — ``sessionid`` and ``ds_user_id`` — so their presence is our
-best-effort "authenticated" signal.
+it into a browser context on every tool call. A live (present, unexpired)
+``sessionid`` is our best-effort "authenticated" signal. ``ds_user_id`` is
+set at login too but can expire months before the session does (seen: expired
+in August on a session that still works in November), so it is not required;
+the account's own pk comes from the page's ``appScopedIdentity`` instead
+(``actorID`` is the Facebook-side ``17841…`` id, not the pk).
 """
 
 from __future__ import annotations
@@ -27,8 +30,10 @@ LOGIN_URL = "https://www.instagram.com/accounts/login/"
 HOME_URL = "https://www.instagram.com/"
 # Instagram bounces unauthenticated requests to /accounts/login.
 LOGIN_URL_FRAGMENTS: tuple[str, ...] = ("/accounts/login",)
-# Cookies that exist only once a real account session is established.
-REQUIRED_COOKIES: tuple[str, ...] = ("sessionid", "ds_user_id")
+# Cookies that must be live for a session to count as authenticated.
+REQUIRED_COOKIES: tuple[str, ...] = ("sessionid",)
+# Cookies the interactive login waits for (both appear right after login).
+LOGIN_COOKIES: tuple[str, ...] = ("sessionid", "ds_user_id")
 DEFAULT_LOGIN_TIMEOUT_S = 600
 LOGIN_POLL_INTERVAL_S = 1.5
 
@@ -84,10 +89,11 @@ def browser_context_options(
     *,
     locale: str | None = None,
     timezone_id: str | None = None,
+    viewport: dict[str, int] | None = None,
 ) -> dict[str, object]:
     """Keyword arguments for ``browser.new_context``, shared by login and tools."""
     return {
-        "viewport": VIEWPORT,
+        "viewport": dict(viewport or VIEWPORT),
         "user_agent": build_user_agent(browser_version),
         "locale": locale or browser_locale(),
         "timezone_id": timezone_id or browser_timezone_id(),
@@ -258,10 +264,19 @@ def session_summary(session_path: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError):
         return summary
 
-    cookies = raw.get("cookies") or []
-    cookie_names = {c.get("name") for c in cookies}
-    missing = [name for name in REQUIRED_COOKIES if name not in cookie_names]
+    cookies = [c for c in (raw.get("cookies") or []) if isinstance(c, dict)]
+    now = time.time()
+
+    def live(cookie: dict) -> bool:
+        expires = cookie.get("expires")
+        # -1 / missing = session cookie (no expiry).
+        return not isinstance(expires, (int, float)) or expires <= 0 or expires > now
+
+    live_names = {c.get("name") for c in cookies if live(c)}
+    expired = sorted({c.get("name") for c in cookies if not live(c)} - live_names)
+    missing = [name for name in REQUIRED_COOKIES if name not in live_names]
     summary["missing_cookies"] = missing
+    summary["expired_cookies"] = [n for n in expired if n in LOGIN_COOKIES]
     summary["authenticated"] = not missing
 
     try:
@@ -283,16 +298,16 @@ def wait_for_instagram_login(
     context: "BrowserContext",
     timeout_s: int = DEFAULT_LOGIN_TIMEOUT_S,
 ) -> dict[str, str]:
-    """Poll cookies until all REQUIRED_COOKIES are present or timeout elapses."""
+    """Poll cookies until all LOGIN_COOKIES are present or timeout elapses."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         cookies = collect_instagram_cookies(context)
-        if all(name in cookies for name in REQUIRED_COOKIES):
+        if all(name in cookies for name in LOGIN_COOKIES):
             return cookies
         time.sleep(LOGIN_POLL_INTERVAL_S)
 
     cookies = collect_instagram_cookies(context)
-    missing = [name for name in REQUIRED_COOKIES if name not in cookies]
+    missing = [name for name in LOGIN_COOKIES if name not in cookies]
     raise TimeoutError(
         f"Timed out after {timeout_s}s waiting for Instagram login. "
         f"Missing cookies: {missing}"

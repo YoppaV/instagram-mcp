@@ -6,9 +6,11 @@ Run with::
 
 Register it with Claude Code at user scope so it's available from every
 project (see README "Connect Claude"). The session file is the Playwright
-storage_state JSON written by ``scripts/auth_login.py``; the server discovers
-it from ``INSTAGRAM_SESSION_FILE``, the ``INSTAGRAM_SESSION_DIR`` directory,
-or — for backward compatibility — the legacy in-repo ``sessions/`` folder.
+storage_state JSON written by ``scripts/auth_login.py``; every
+``<handle>_instagram_state.json`` in ``INSTAGRAM_SESSION_DIR`` (or the legacy
+in-repo ``sessions/`` folder), plus ``INSTAGRAM_SESSION_FILE``, is one account.
+Every tool takes an optional ``account``; without it the default account
+is used (``INSTAGRAM_DEFAULT_ACCOUNT``, or the only session there is).
 
 All tools are read-only. Every Instagram request is an in-page ``fetch`` from
 one warm, resource-blocked tab, serialized behind a lock and paced with
@@ -24,8 +26,7 @@ import logging
 import os
 import sys
 from dataclasses import asdict, is_dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP, Image
@@ -35,10 +36,12 @@ from mcp.server.fastmcp import FastMCP, Image
 # loader uses ``spec_from_file_location`` and the module has no
 # ``__package__``, which breaks relative imports.
 from instagram_sdk import downloader
-from instagram_sdk.accounts import Account
-from instagram_sdk.auth import session_summary
-from instagram_sdk.cursors import MAX_PAGES_PER_CALL
+from instagram_sdk.accounts import Account, AccountRegistry, DefaultChoice
+from instagram_sdk.auth import REQUIRED_COOKIES, session_summary
+from instagram_sdk.cursors import MAX_PAGES_PER_CALL, CursorState, decode_cursor, envelope
 from instagram_sdk.endpoints import home, media, post, profile, saved
+from instagram_sdk.endpoints._ids import normalize_username
+from instagram_sdk.errors import AccountConfigError, AccountError
 from instagram_sdk.models import (
     DownloadedMedia,
     MediaDownloadResult,
@@ -53,26 +56,18 @@ load_dotenv()
 mcp = FastMCP("instagram-mcp")
 
 # Hard cap on every ``limit``: more posts means more requests on the account.
+# Use ``next_cursor`` to read further.
 MAX_LIMIT = 50
-
-
-def _resolve_session_path() -> Path:
-    """The session file, looked up on every call (a login needs no restart)."""
-    return Settings.from_env().resolve_session_path()
-
 
 _runtime: Runtime | None = None
 
 
 def get_runtime() -> Runtime:
-    """The process runtime (browser, lock, state), created on first use."""
+    """The process runtime (accounts, browser, locks, state), created on first use."""
     global _runtime
     if _runtime is None:
-        _runtime = Runtime(
-            Settings.from_env(),
-            # Late-bound so tests can patch ``_resolve_session_path``.
-            session_source=lambda: _resolve_session_path(),
-        )
+        settings = Settings.from_env()
+        _runtime = Runtime(settings, registry=AccountRegistry(settings))
     return _runtime
 
 
@@ -107,87 +102,192 @@ def _select_indices(
     return [(i, item) for i, item in enumerated if i in wanted]
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
-    """Write via a ``.part`` file + rename, so a crash never leaves half a file."""
-    tmp = path.with_name(path.name + ".part")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+async def _paged(
+    tool: str,
+    account: str | None,
+    cursor: str | None,
+    params: dict[str, Any],
+    call: Callable[[Any, CursorState | None], Awaitable[Any]],
+) -> dict[str, Any]:
+    """Resolve the account, decode the cursor (before any network), run, wrap."""
+    runtime = get_runtime()
+    acct = runtime.resolve(account)
+    start = decode_cursor(cursor, tool, acct.handle, params)
+    page = await runtime.run(acct.handle, lambda ig: call(ig, start))
+    return envelope(page, tool=tool, account=acct.handle, params=params, serialize=_serialize)
+
+
+# --------------------------------------------------------------------------
+# Accounts
+# --------------------------------------------------------------------------
+def _account_status(runtime: Runtime, acct: Account,
+                    choice: DefaultChoice | None, default_error: str | None) -> dict[str, Any]:
+    summary = session_summary(acct.session_path)
+    is_default = choice is not None and choice.account.key == acct.key
+    summary.update({
+        "account": acct.handle,
+        "handle": acct.handle,
+        "is_default": is_default,
+        "default_source": choice.source if is_default and choice else None,
+        "user_id": acct.user_id,
+        **runtime.state.summary(acct),
+        "warning": (choice.warning if is_default and choice else None) or default_error,
+    })
+    return summary
+
+
+def _default_choice(runtime: Runtime) -> tuple[DefaultChoice | None, str | None]:
+    try:
+        return runtime.registry.default(), None
+    except AccountConfigError:
+        raise
+    except AccountError as exc:
+        return None, str(exc)
 
 
 @mcp.tool()
-async def auth_status() -> dict[str, Any]:
+async def auth_status(account: str | None = None) -> dict[str, Any]:
     """Report whether an Instagram session is loaded and likely valid.
 
-    Returns the session file path, the handle inferred from the filename,
-    last-modified timestamp (proxy for last login), and an `authenticated`
-    flag based on the presence of `sessionid` + `ds_user_id` cookies.
-
-    Also reports ``state`` (``ok`` | ``blocked`` | ``cooldown`` | ``expired``)
-    and ``block`` (kind, detail, until) if Instagram stopped the account
-    earlier: a held account fails fast, without network, until it clears.
+    Returns, for ``account`` (or the default account when omitted): the
+    session file path, the handle, last-modified timestamp (proxy for last
+    login), an ``authenticated`` flag based on a live (unexpired)
+    ``sessionid`` cookie, ``expired_cookies`` (informational: ``ds_user_id``
+    may expire long before the session and is not required), ``user_id``,
+    ``is_default`` and ``default_source``
+    (why it is the default), and ``state`` (``ok`` | ``blocked`` |
+    ``cooldown`` | ``expired``) with ``block`` (kind, detail, until) if
+    Instagram stopped the account earlier: a held account fails fast, without
+    network, until it clears. ``warning`` explains a configuration mismatch
+    (e.g. ``INSTAGRAM_USERNAME`` naming an account with no session) or why
+    there is no default. See ``list_accounts`` for every account.
 
     This does NOT make a network request — to verify the session actually
     works, call any other tool. Session-expired errors there point back here.
-    """
-    path = _resolve_session_path()
-    summary = session_summary(path)
-    summary.update(get_runtime().state.summary(Account.from_session(path)))
-    return summary
 
+    Args:
+        account: Account handle (as in ``list_accounts``). Omit for the default.
+    """
+    runtime = get_runtime()
+    choice, default_error = _default_choice(runtime)
+    if account is not None and str(account).strip():
+        acct = runtime.resolve(account)
+    elif choice is not None:
+        acct = choice.account
+    else:
+        return {
+            "authenticated": False,
+            "account": None,
+            "handle": None,
+            "session_path": None,
+            "last_login": None,
+            "missing_cookies": list(REQUIRED_COOKIES),
+            "expired_cookies": [],
+            "is_default": False,
+            "default_source": None,
+            "user_id": None,
+            "state": None,
+            "block": None,
+            "warning": default_error,
+            "available": [a.handle for a in runtime.registry.list()],
+        }
+    return _account_status(runtime, acct, choice, None if choice else default_error)
+
+
+@mcp.tool()
+async def list_accounts() -> list[dict[str, Any]]:
+    """List every logged-in Instagram account and its state. No network.
+
+    One entry per session file found, with the same fields as
+    ``auth_status``. ``is_default`` marks the account used when a tool gets no
+    ``account``. Returns ``[]`` when there are no sessions (log in with
+    ``python -m scripts.auth_login --username <handle>``).
+    """
+    runtime = get_runtime()
+    choice, default_error = _default_choice(runtime)
+    return [
+        _account_status(runtime, acct, choice, None if choice else default_error)
+        for acct in runtime.registry.list()
+    ]
+
+
+# --------------------------------------------------------------------------
+# Reading
+# --------------------------------------------------------------------------
 
 @mcp.tool()
 async def get_saved_posts(
     collection_id: str | None = None,
     limit: int = 24,
-) -> list[dict[str, Any]]:
-    """Read your saved posts (private to your account).
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Read your saved posts (private to the account).
+
+    Returns ``{items, next_cursor, stopped}``: ``items`` are posts;
+    ``next_cursor`` (or null when there are no more) continues the list when
+    passed back as ``cursor`` with the same other arguments; ``stopped`` says
+    why this page ended (``end`` | ``limit`` | ``page_cap`` | ``budget``).
 
     Args:
         collection_id: Restrict to one save-collection (its id, from
             `get_saved_collections`). Omit for the full "All Posts" bucket.
         limit: Max posts to return (default 24, capped at 50). Keep this modest.
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account (a handle from `list_accounts`).
+            Omit for the default account.
     """
-    page = await get_runtime().run(
-        None,
-        lambda ig: saved.fetch_saved_page(
-            ig,
-            collection_id=collection_id,
-            limit=_clamp_limit(limit),
-            max_pages=MAX_PAGES_PER_CALL,
+    cid = collection_id.strip() if isinstance(collection_id, str) and collection_id.strip() else None
+    return await _paged(
+        "get_saved_posts", account, cursor, {"collection_id": cid},
+        lambda ig, start: saved.fetch_saved_page(
+            ig, collection_id=cid, limit=_clamp_limit(limit),
+            start=start, max_pages=MAX_PAGES_PER_CALL,
         ),
     )
-    return _serialize(page.items)
 
 
 @mcp.tool()
-async def get_saved_collections() -> list[dict[str, Any]]:
+async def get_saved_collections(account: str | None = None) -> list[dict[str, Any]]:
     """List your save-collections — each with its name and item count.
 
     The implicit "All Posts" bucket is included. Pass a collection's id to
     `get_saved_posts` to read just that collection.
+
+    Args:
+        account: Which logged-in account (a handle from `list_accounts`).
+            Omit for the default account.
     """
-    collections = await get_runtime().run(None, lambda ig: saved.fetch_collections(ig))
+    collections = await get_runtime().run(account, lambda ig: saved.fetch_collections(ig))
     return _serialize(collections)
 
 
 @mcp.tool()
-async def get_home_feed(limit: int = 15) -> list[dict[str, Any]]:
-    """Read your home feed (timeline). Sponsored posts are dropped.
+async def get_home_feed(
+    limit: int = 15,
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Read the account's home feed (timeline). Sponsored posts are dropped.
+
+    Returns ``{items, next_cursor, stopped}`` (see `get_saved_posts`).
 
     Args:
         limit: Max posts to return (default 15, capped at 50). Keep this modest.
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account (a handle from `list_accounts`).
+            Omit for the default account.
     """
-    page = await get_runtime().run(
-        None,
-        lambda ig: home.fetch_home_page(
-            ig, limit=_clamp_limit(limit), max_pages=MAX_PAGES_PER_CALL
+    return await _paged(
+        "get_home_feed", account, cursor, {},
+        lambda ig, start: home.fetch_home_page(
+            ig, limit=_clamp_limit(limit), start=start, max_pages=MAX_PAGES_PER_CALL
         ),
     )
-    return _serialize(page.items)
 
 
 @mcp.tool()
-async def get_user_profile(username: str) -> dict[str, Any] | None:
+async def get_user_profile(username: str, account: str | None = None) -> dict[str, Any] | None:
     """Fetch a user's public profile.
 
     Returns bio, counters (posts, followers, following), private/verified
@@ -195,9 +295,11 @@ async def get_user_profile(username: str) -> dict[str, Any] | None:
 
     Args:
         username: Instagram username without the leading "@".
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
     """
     result = await get_runtime().run(
-        None, lambda ig: profile.fetch_profile(ig, username=username)
+        account, lambda ig: profile.fetch_profile(ig, username=username)
     )
     return _serialize(result)
 
@@ -207,30 +309,37 @@ async def get_user_posts(
     username: str,
     limit: int = 24,
     include_reels: bool = False,
-) -> list[dict[str, Any]]:
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
     """Fetch posts from a user's profile grid.
+
+    Returns ``{items, next_cursor, stopped}`` (see `get_saved_posts`). On a
+    profile that is mostly reels, ``stopped`` may be ``page_cap``: pass
+    ``next_cursor`` back to keep looking.
 
     Args:
         username: Instagram username without the leading "@".
         limit: Max posts to return (default 24, capped at 50).
         include_reels: Keep reels in the result (excluded by default — use
             `get_user_reels` for a reels-only view).
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
     """
-    page = await get_runtime().run(
-        None,
-        lambda ig: profile.fetch_posts_page(
-            ig,
-            username=username,
-            limit=_clamp_limit(limit),
-            include_reels=include_reels,
-            max_pages=MAX_PAGES_PER_CALL,
+    handle = normalize_username(username)
+    return await _paged(
+        "get_user_posts", account, cursor,
+        {"username": handle.casefold(), "include_reels": bool(include_reels)},
+        lambda ig, start: profile.fetch_posts_page(
+            ig, username=handle, limit=_clamp_limit(limit),
+            include_reels=include_reels, start=start, max_pages=MAX_PAGES_PER_CALL,
         ),
     )
-    return _serialize(page.items)
 
 
 @mcp.tool()
-async def get_post(id_or_url: str) -> dict[str, Any] | None:
+async def get_post(id_or_url: str, account: str | None = None) -> dict[str, Any] | None:
     """Fetch one post by shortcode or URL.
 
     Returns the author, caption, media (images / videos / carousel slides) and
@@ -239,9 +348,11 @@ async def get_post(id_or_url: str) -> dict[str, Any] | None:
     Args:
         id_or_url: The post shortcode (e.g. "C8xY1zAbCdE") or a full
             https://www.instagram.com/p/<shortcode>/ URL. Reel URLs work too.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
     """
     result = await get_runtime().run(
-        None, lambda ig: post.fetch(ig, id_or_url=id_or_url)
+        account, lambda ig: post.fetch(ig, id_or_url=id_or_url)
     )
     return _serialize(result)
 
@@ -250,20 +361,28 @@ async def get_post(id_or_url: str) -> dict[str, Any] | None:
 async def get_user_reels(
     username: str,
     limit: int = 12,
-) -> list[dict[str, Any]]:
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
     """Fetch reels from a user's Reels tab.
+
+    Returns ``{items, next_cursor, stopped}`` (see `get_saved_posts`).
 
     Args:
         username: Instagram username without the leading "@".
         limit: Max reels to return (default 12, capped at 50).
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
     """
-    page = await get_runtime().run(
-        None,
-        lambda ig: profile.fetch_reels_page(
-            ig, username=username, limit=_clamp_limit(limit), max_pages=MAX_PAGES_PER_CALL
+    handle = normalize_username(username)
+    return await _paged(
+        "get_user_reels", account, cursor, {"username": handle.casefold()},
+        lambda ig, start: profile.fetch_reels_page(
+            ig, username=handle, limit=_clamp_limit(limit),
+            start=start, max_pages=MAX_PAGES_PER_CALL,
         ),
     )
-    return _serialize(page.items)
 
 
 @mcp.tool(structured_output=False)
@@ -271,6 +390,7 @@ async def download_media(
     id_or_url: str,
     indices: list[int] | None = None,
     download_videos: bool = False,
+    account: str | None = None,
 ) -> list[Any]:
     """Download a post's media so Claude can actually see it.
 
@@ -294,23 +414,27 @@ async def download_media(
             (relevant for carousels; a single post/reel has one item).
         download_videos: Opt in to downloading videos/reels. When set there is
             no size cap — the opt-in is the only gate.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
 
     Returns:
         A list of inline images followed by one JSON summary:
-        ``{shortcode, downloaded:[...], skipped:[...]}``. Saved files are named
-        ``post_<shortcode>_<index>.<ext>`` under the downloads directory
-        (``~/.instagram-mcp/downloads/`` by default, or
-        ``INSTAGRAM_DOWNLOADS_DIR``).
+        ``{shortcode, downloaded:[...], skipped:[...]}``. Saved files are
+        ``<downloads>/<account>/post_<shortcode>_<pk>_<NN>.<ext>`` (downloads
+        directory: ``~/.instagram-mcp/downloads/`` by default, or
+        ``INSTAGRAM_DOWNLOADS_DIR``). The numeric ``pk`` keeps posts apart on
+        case-insensitive file systems; re-downloading overwrites the same file.
     """
     runtime = get_runtime()
-    shortcode, items = await runtime.run(
-        None, lambda ig: media.resolve_post_media(ig, id_or_url=id_or_url)
+    acct = runtime.resolve(account)
+    found = await runtime.run(
+        acct.handle, lambda ig: media.resolve_post_for_download(ig, id_or_url=id_or_url)
     )
+    shortcode, items = found.shortcode, found.media
 
     selected = _select_indices(items, indices)
 
     downloads_dir = Settings.from_env().downloads_dir
-    downloads_dir.mkdir(parents=True, exist_ok=True)
     client = runtime.http_client()
 
     images: list[Image] = []
@@ -359,8 +483,8 @@ async def download_media(
             outcome.content_type, downloader.extension_from_url(url)
         )
         ext = downloader.format_to_extension(fmt)
-        path = downloads_dir / f"post_{shortcode}_{index:02d}.{ext}"
-        _write_atomic(path, outcome.data)
+        path = downloader.media_path(downloads_dir, acct.handle, shortcode, found.pk, index, ext)
+        downloader.write_atomic(path, outcome.data)
 
         downloaded.append(
             DownloadedMedia(

@@ -111,8 +111,14 @@ def _make_collection(name: str = "Recipes") -> Collection:
 class FakeRuntime:
     """Stands in for ``Runtime``: runs ``fn`` with an opaque client."""
 
-    def __init__(self) -> None:
+    def __init__(self, handle: str = "carol") -> None:
         self.accounts: list[Any] = []
+        self.handle = handle
+
+    def resolve(self, account: Any) -> Any:
+        from instagram_sdk.accounts import Account
+
+        return Account(account or self.handle, Path(f"/x/{account or self.handle}_instagram_state.json"))
 
     async def run(self, account: Any, fn: Any) -> Any:
         self.accounts.append(account)
@@ -132,26 +138,94 @@ def _page(items: list[Any]) -> PageResult:
 
 
 class AuthStatusToolTests(unittest.TestCase):
-    def test_reports_session_summary_and_state(self) -> None:
-        import tempfile
+    def _runtime(self, tmp: str, **env: Any) -> Any:
+        from dataclasses import replace
 
+        from instagram_sdk.accounts import AccountRegistry
         from instagram_sdk.runtime import Runtime
         from instagram_sdk.settings import Settings
 
-        missing = Path("/nope/carol_instagram_state.json")
-        with tempfile.TemporaryDirectory() as tmp:
-            from dataclasses import replace
+        fields = {"session_file": None, "username": "", "default_account": "", **env}
+        settings = replace(Settings.from_env(), state_dir=Path(tmp) / "state",
+                           session_dir=Path(tmp) / "sessions", **fields)
+        return Runtime(settings, registry=AccountRegistry(settings))
 
-            runtime = Runtime(replace(Settings.from_env(), state_dir=Path(tmp)),
-                              session_source=lambda: missing)
-            with mock.patch.object(
-                server_mod, "_resolve_session_path", return_value=missing
-            ), mock.patch.object(server_mod, "get_runtime", return_value=runtime):
+    def _session(self, tmp: str, handle: str) -> Path:
+        d = Path(tmp) / "sessions"
+        d.mkdir(exist_ok=True)
+        path = d / f"{handle}_instagram_state.json"
+        path.write_text(json.dumps({"cookies": [
+            {"name": "sessionid", "value": "S"}, {"name": "ds_user_id", "value": "77"}]}))
+        return path
+
+    def test_no_sessions(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime = self._runtime(tmp)
+            with mock.patch.object(server_mod, "get_runtime", return_value=runtime):
                 result = _run(server_mod.auth_status())
+                listed = _run(server_mod.list_accounts())
         self.assertFalse(result["authenticated"])
-        self.assertEqual(result["session_path"], str(missing))
+        self.assertIsNone(result["account"])
+        self.assertIn("auth_login", result["warning"])
+        self.assertEqual(listed, [])
+
+    def test_reports_default_and_state(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._session(tmp, "carol")
+            runtime = self._runtime(tmp, username="someone_else")
+            with mock.patch.object(server_mod, "get_runtime", return_value=runtime):
+                result = _run(server_mod.auth_status())
+        self.assertTrue(result["authenticated"])
+        self.assertEqual(result["account"], "carol")
+        self.assertEqual(result["session_path"], str(path))
+        self.assertEqual(result["user_id"], "77")
+        self.assertTrue(result["is_default"])
+        self.assertEqual(result["default_source"], "only_session")
+        self.assertIn("INSTAGRAM_USERNAME=someone_else", result["warning"])
         self.assertEqual(result["state"], "ok")
         self.assertIsNone(result["block"])
+
+    def test_list_accounts_and_explicit_account(self) -> None:
+        import tempfile
+
+        from instagram_sdk.errors import UnknownAccountError
+        from instagram_sdk.guard import BlockSignal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session(tmp, "carol")
+            self._session(tmp, "dave")
+            runtime = self._runtime(tmp, default_account="dave")
+            runtime.state.record(runtime.resolve("carol"), BlockSignal("checkpoint", "x"))
+            with mock.patch.object(server_mod, "get_runtime", return_value=runtime):
+                listed = _run(server_mod.list_accounts())
+                carol = _run(server_mod.auth_status(account="@Carol"))
+                with self.assertRaises(UnknownAccountError):
+                    _run(server_mod.auth_status(account="zed"))
+        self.assertEqual([a["account"] for a in listed], ["carol", "dave"])
+        self.assertEqual([a["is_default"] for a in listed], [False, True])
+        self.assertEqual(listed[1]["default_source"], "default_account")
+        self.assertEqual(carol["state"], "blocked")
+        self.assertEqual(carol["block"]["kind"], "checkpoint")
+        # The block on carol pauses dave too (shared IP and browser).
+        self.assertEqual(listed[1]["state"], "cooldown")
+        self.assertEqual(listed[1]["block"]["kind"], "global_cooldown")
+
+    def test_ambiguous_default_is_reported_not_guessed(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self._session(tmp, "carol")
+            self._session(tmp, "dave")
+            runtime = self._runtime(tmp)
+            with mock.patch.object(server_mod, "get_runtime", return_value=runtime):
+                result = _run(server_mod.auth_status())
+        self.assertIsNone(result["account"])
+        self.assertEqual(result["available"], ["carol", "dave"])
+        self.assertIn("INSTAGRAM_DEFAULT_ACCOUNT", result["warning"])
 
 
 class GetHomeFeedToolTests(unittest.TestCase):
@@ -161,7 +235,10 @@ class GetHomeFeedToolTests(unittest.TestCase):
             "instagram_sdk.server.home.fetch_home_page", new=fetch
         ):
             result = _run(server_mod.get_home_feed(limit=5))
-        self.assertEqual([p["id"] for p in result], ["1_2", "3_4"])
+        self.assertEqual(set(result), {"items", "next_cursor", "stopped"})
+        self.assertEqual([p["id"] for p in result["items"]], ["1_2", "3_4"])
+        self.assertIsNone(result["next_cursor"])
+        self.assertEqual(result["stopped"], "end")
         self.assertEqual(fetch.call_args.kwargs["limit"], 5)
         json.dumps(result)
 
@@ -196,7 +273,7 @@ class GetUserPostsToolTests(unittest.TestCase):
                     username="carol", limit=7, include_reels=True
                 )
             )
-        self.assertEqual(result[0]["id"], "9_9")
+        self.assertEqual(result["items"][0]["id"], "9_9")
         self.assertEqual(fetch.call_args.kwargs["include_reels"], True)
         self.assertEqual(fetch.call_args.kwargs["limit"], 7)
 
@@ -208,8 +285,8 @@ class GetUserReelsToolTests(unittest.TestCase):
             "instagram_sdk.server.profile.fetch_reels_page", new=fetch
         ):
             result = _run(server_mod.get_user_reels(username="carol"))
-        self.assertEqual(result[0]["id"], "5_5")
-        self.assertEqual(result[0]["play_count"], 9999)
+        self.assertEqual(result["items"][0]["id"], "5_5")
+        self.assertEqual(result["items"][0]["play_count"], 9999)
         json.dumps(result)
 
 
@@ -239,7 +316,7 @@ class GetSavedPostsToolTests(unittest.TestCase):
             "instagram_sdk.server.saved.fetch_saved_page", new=fetch
         ):
             result = _run(server_mod.get_saved_posts(limit=10))
-        self.assertEqual(result[0]["id"], "6001_70")
+        self.assertEqual(result["items"][0]["id"], "6001_70")
         self.assertNotIn("handle", fetch.call_args.kwargs)
         self.assertIsNone(fetch.call_args.kwargs["collection_id"])
         self.assertEqual(fetch.call_args.kwargs["max_pages"], 8)
@@ -266,12 +343,51 @@ class GetSavedCollectionsToolTests(unittest.TestCase):
         json.dumps(result)
 
 
+class AccountAndCursorTests(unittest.TestCase):
+    def test_account_reaches_the_runtime(self) -> None:
+        runtime = FakeRuntime()
+        fetch = mock.AsyncMock(return_value=_make_profile())
+        with mock.patch.object(server_mod, "get_runtime", return_value=runtime), \
+                mock.patch("instagram_sdk.server.profile.fetch_profile", new=fetch):
+            _run(server_mod.get_user_profile(username="x", account="dave"))
+            _run(server_mod.get_user_profile(username="x"))
+        self.assertEqual(runtime.accounts, ["dave", None])
+
+    def test_cursor_round_trip(self) -> None:
+        from instagram_sdk.cursors import CursorState
+
+        runtime = FakeRuntime()
+        first = mock.AsyncMock(return_value=PageResult([_make_post("1_1")],
+                                                       CursorState("UP2", 0), "limit"))
+        with mock.patch.object(server_mod, "get_runtime", return_value=runtime), \
+                mock.patch("instagram_sdk.server.profile.fetch_posts_page", new=first):
+            out = _run(server_mod.get_user_posts(username="@Carol", limit=1))
+            self.assertIsNone(first.call_args.kwargs["start"])
+            cursor = out["next_cursor"]
+            self.assertIsInstance(cursor, str)
+            _run(server_mod.get_user_posts(username="carol", limit=1, cursor=cursor))
+            self.assertEqual(first.call_args.kwargs["start"], CursorState("UP2", 0))
+            # Same cursor, other query / other account / other tool → rejected
+            # before any request.
+            calls = first.call_count
+            for kwargs in ({"username": "dave"}, {"username": "carol", "include_reels": True},
+                           {"username": "carol", "account": "dave"}):
+                with self.subTest(**kwargs), self.assertRaises(ValueError):
+                    _run(server_mod.get_user_posts(cursor=cursor, **kwargs))
+            with self.assertRaises(ValueError):
+                _run(server_mod.get_user_reels(username="carol", cursor=cursor))
+            with self.assertRaises(ValueError):
+                _run(server_mod.get_user_posts(username="carol", cursor="garbage!"))
+        self.assertEqual(first.call_count, calls)
+
+
 class ToolRegistrationTests(unittest.TestCase):
     def test_all_tools_registered(self) -> None:
         tools = _run(server_mod.mcp.list_tools())
         names = {t.name for t in tools}
         expected = {
             "auth_status",
+            "list_accounts",
             "get_saved_posts",
             "get_saved_collections",
             "get_home_feed",

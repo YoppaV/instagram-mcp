@@ -93,14 +93,25 @@ class NavigationErrorStatusTests(unittest.TestCase):
 
 
 class UnwritableStateTests(_Base):
-    """4. A block applies (in memory) and closes the context even if disk fails."""
+    """4. A block applies (in memory) and closes the context even if disk fails.
+
+    Since PR #6's review this needs the explicit opt-in
+    ``INSTAGRAM_ALLOW_DEGRADED_STATE``; without it the call is refused before
+    any request (``test_review6``).
+    """
 
     def test_block_applies_when_state_dir_is_not_writable(self) -> None:
-        bad = self.dir / "not_a_dir"
-        bad.write_text("x")
+        import os
+
+        if os.name != "posix" or os.geteuid() == 0:
+            self.skipTest("needs POSIX permissions and a non-root user")
+        bad = self.dir / "readonly_state"
+        bad.mkdir()
+        os.chmod(bad, 0o555)
+        self.addCleanup(os.chmod, bad, 0o755)
         from dataclasses import replace
 
-        settings = replace(self.settings, state_dir=bad)
+        settings = replace(self.settings, state_dir=bad, allow_degraded_state=True)
         pw = FakePW()
         manager = BrowserManager(settings, playwright_factory=lambda: pw)
         runtime = Runtime(settings, session_source=lambda: self.session, browser=manager)

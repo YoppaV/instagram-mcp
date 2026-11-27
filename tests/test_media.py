@@ -56,7 +56,17 @@ def _video_item() -> MediaItem:
 
 
 class FakeRuntime:
+    def __init__(self, handle: str = "Carol") -> None:
+        self.handle = handle
+        self.accounts: list[Any] = []
+
+    def resolve(self, account: Any) -> Any:
+        from instagram_sdk.accounts import Account
+
+        return Account(account or self.handle, Path(f"/x/{self.handle}_instagram_state.json"))
+
     async def run(self, account: Any, fn: Any) -> Any:
+        self.accounts.append(account)
         return await fn(object())  # the resolver is mocked, never touches it
 
     def http_client(self) -> Any:
@@ -64,6 +74,16 @@ class FakeRuntime:
 
     def download_semaphore(self) -> asyncio.Semaphore:
         return asyncio.Semaphore(2)
+
+
+def _post(shortcode: str, media: tuple[MediaItem, ...], pk: str) -> Post:
+    return Post(
+        pk=pk, id=f"{pk}_2", shortcode=shortcode,
+        url=f"https://www.instagram.com/p/{shortcode}/", media_type=1, caption="c",
+        media=media, like_count=1, comment_count=0, view_count=None,
+        taken_at=1700000000, product_type="feed", location=None,
+        author=User("2", "carol", "Carol", False, False, None),
+    )
 
 
 def _ok(content_type: str, data: bytes) -> FetchOutcome:
@@ -88,18 +108,22 @@ class DownloadMediaToolTests(unittest.TestCase):
         indices: list[int] | None = None,
         download_videos: bool = False,
         shortcode: str = "DYdWoL8gASP",
+        pk: str = "3600000000000000001",
+        account: str | None = None,
     ) -> list[Any]:
-        resolve = mock.AsyncMock(return_value=(shortcode, items))
+        resolve = mock.AsyncMock(return_value=_post(shortcode, items, pk))
         fetch = mock.AsyncMock(side_effect=outcomes)
-        with mock.patch.object(server_mod, "get_runtime", return_value=FakeRuntime()), \
+        self.runtime = FakeRuntime()
+        with mock.patch.object(server_mod, "get_runtime", return_value=self.runtime), \
              mock.patch.dict("os.environ", {"INSTAGRAM_DOWNLOADS_DIR": str(self.tmp)}), \
-             mock.patch.object(server_mod.media, "resolve_post_media", new=resolve), \
+             mock.patch.object(server_mod.media, "resolve_post_for_download", new=resolve), \
              mock.patch.object(server_mod.downloader, "fetch_bytes", new=fetch):
             return _run(
                 server_mod.download_media(
                     id_or_url=shortcode,
                     indices=indices,
                     download_videos=download_videos,
+                    account=account,
                 )
             )
 
@@ -115,9 +139,19 @@ class DownloadMediaToolTests(unittest.TestCase):
         self.assertEqual(len(summary["skipped"]), 0)
         saved = Path(summary["downloaded"][0]["saved_path"])
         self.assertTrue(saved.exists())
-        self.assertEqual(saved.name, "post_DYdWoL8gASP_00.jpg")
+        self.assertEqual(saved.name, "post_DYdWoL8gASP_3600000000000000001_00.jpg")
+        # One folder per account, casefolded; the default account when omitted.
+        self.assertEqual(saved.parent, self.tmp.resolve() / "carol")
         self.assertEqual(saved.read_bytes(), TINY_JPEG)
-        self.assertEqual(list(self.tmp.glob("*.part")), [])  # atomic write
+        self.assertEqual(list(self.tmp.rglob("*.part")), [])  # atomic write
+
+    def test_explicit_account_gets_its_own_folder(self) -> None:
+        result = self._call(
+            (_image_item(),), outcomes=[_ok("image/jpeg", TINY_JPEG)], account="Other.One"
+        )
+        saved = Path(result[-1]["downloaded"][0]["saved_path"])
+        self.assertEqual(saved.parent.name, "other.one")
+        self.assertEqual(self.runtime.accounts, ["Other.One"])
 
     def test_video_skipped_unless_opted_in(self) -> None:
         result = self._call((_video_item(),), outcomes=[])
@@ -139,7 +173,7 @@ class DownloadMediaToolTests(unittest.TestCase):
         # Video bytes never go back inline.
         self.assertEqual([r for r in result if isinstance(r, Image)], [])
         saved = Path(summary["downloaded"][0]["saved_path"])
-        self.assertEqual(saved.name, "post_DYdWoL8gASP_00.mp4")
+        self.assertEqual(saved.name, "post_DYdWoL8gASP_3600000000000000001_00.mp4")
 
     def test_indices_filter_keeps_original_index_in_filename(self) -> None:
         carousel = (_image_item(), _image_item(), _image_item())
@@ -150,7 +184,7 @@ class DownloadMediaToolTests(unittest.TestCase):
         self.assertEqual(len(summary["downloaded"]), 1)
         self.assertEqual(
             Path(summary["downloaded"][0]["saved_path"]).name,
-            "post_DYdWoL8gASP_02.jpg",
+            "post_DYdWoL8gASP_3600000000000000001_02.jpg",
         )
 
     def test_download_failure_is_skipped_with_reason(self) -> None:
@@ -201,6 +235,51 @@ class ResolvePostMediaTests(unittest.TestCase):
                 _run(media_mod.resolve_post_media(object(), id_or_url="ZZZ"))
 
 
+class MediaPathTests(unittest.TestCase):
+    def test_case_only_shortcodes_do_not_collide(self) -> None:
+        from instagram_sdk.downloader import media_path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            a = media_path(root, "Carol", "AbCdEf", "111", 0, "jpg")
+            b = media_path(root, "carol", "aBcDeF", "222", 0, "jpg")
+            self.assertNotEqual(a.name.casefold(), b.name.casefold())
+            self.assertEqual(a.parent, b.parent)
+            self.assertEqual(a.parent.name, "carol")
+            # Idempotent: the same media maps to the same file.
+            self.assertEqual(a, media_path(root, "carol", "AbCdEf", "111", 0, "jpg"))
+
+    def test_rejects_paths_that_escape(self) -> None:
+        from instagram_sdk.downloader import media_path
+
+        root = Path("/tmp/x")
+        for account, code in (("..", "abc"), ("carol", "../x"), ("a/b", "abc")):
+            with self.subTest(account=account, code=code):
+                with self.assertRaises(ValueError):
+                    media_path(root, account, code, "1", 0, "jpg")
+
+    def test_atomic_write_leaves_no_temp(self) -> None:
+        from instagram_sdk.downloader import write_atomic
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "acct" / "f.jpg"
+            write_atomic(path, b"one")
+            write_atomic(path, b"two")
+            self.assertEqual(path.read_bytes(), b"two")
+            self.assertEqual([p.name for p in path.parent.iterdir()], ["f.jpg"])
+
+
+class ResolveForDownloadTests(unittest.TestCase):
+    def test_returns_post_with_pk(self) -> None:
+        post = _post("DYdWoL8gASP", (_image_item(),), "42")
+        fetch = mock.AsyncMock(return_value=post)
+        with mock.patch.object(media_mod.post, "fetch", new=fetch):
+            got = _run(media_mod.resolve_post_for_download(
+                object(), id_or_url="https://www.instagram.com/p/DYdWoL8gASP/"))
+        self.assertEqual(got.pk, "42")
+        self.assertEqual(fetch.call_args.kwargs["id_or_url"], "DYdWoL8gASP")
+
+
 class SelectIndicesTests(unittest.TestCase):
     def test_none_returns_all_enumerated(self) -> None:
         items = (_image_item(), _video_item())
@@ -220,7 +299,7 @@ class ToolRegistrationTests(unittest.TestCase):
         tools = _run(server_mod.mcp.list_tools())
         names = {t.name for t in tools}
         self.assertIn("download_media", names)
-        self.assertEqual(len(names), 9)
+        self.assertEqual(len(names), 10)
 
 
 if __name__ == "__main__":

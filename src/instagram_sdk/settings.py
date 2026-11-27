@@ -15,6 +15,8 @@ from pathlib import Path
 DEFAULT_IDLE_TIMEOUT_S = 180
 DEFAULT_LOCALE = "en-US"
 DEFAULT_TIMEZONE_ID = "Etc/UTC"
+DEFAULT_MAX_PER_HOUR = 150
+DEFAULT_MAX_PER_DAY = 800
 
 _HOME_ROOT = Path.home() / ".instagram-mcp"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -61,6 +63,10 @@ class Settings:
     block_js: bool
     locale: str
     timezone_id: str
+    default_account: str = ""
+    max_requests_per_hour: int = DEFAULT_MAX_PER_HOUR
+    max_requests_per_day: int = DEFAULT_MAX_PER_DAY
+    allow_degraded_state: bool = False
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -76,6 +82,10 @@ class Settings:
             block_js=_env_bool("INSTAGRAM_BLOCK_JS", True),
             locale=_env("BROWSER_LOCALE") or DEFAULT_LOCALE,
             timezone_id=_env("BROWSER_TIMEZONE_ID") or DEFAULT_TIMEZONE_ID,
+            default_account=_env("INSTAGRAM_DEFAULT_ACCOUNT").lstrip("@"),
+            max_requests_per_hour=_env_int("INSTAGRAM_MAX_REQUESTS_PER_HOUR", DEFAULT_MAX_PER_HOUR),
+            max_requests_per_day=_env_int("INSTAGRAM_MAX_REQUESTS_PER_DAY", DEFAULT_MAX_PER_DAY),
+            allow_degraded_state=_env_bool("INSTAGRAM_ALLOW_DEGRADED_STATE", False),
         )
 
     def candidate_session_dirs(self) -> list[Path]:
@@ -88,21 +98,3 @@ class Settings:
         if self.session_dir is not None:
             return [self.session_dir]
         return [_HOME_ROOT / "sessions", _LEGACY_SESSION_DIR]
-
-    def resolve_session_path(self) -> Path:
-        """The session file to load. May not exist (the caller reports that)."""
-        if self.session_file is not None:
-            return self.session_file
-        candidates = self.candidate_session_dirs()
-        if self.username:
-            filename = f"{self.username}_instagram_state.json"
-            for directory in candidates:
-                candidate = directory / filename
-                if candidate.exists():
-                    return candidate
-            return candidates[0] / filename
-        for directory in candidates:
-            matches = sorted(directory.glob(SESSION_GLOB))
-            if matches:
-                return matches[0]
-        return candidates[0] / "instagram_state.json"

@@ -69,6 +69,50 @@ class ValidateHandleTests(unittest.TestCase):
         launch.assert_not_called()
 
 
+class AddAccountTests(unittest.TestCase):
+    """auth_login adds an account without touching the others."""
+
+    def test_atomic_save_keeps_other_accounts_and_survives_failure(self) -> None:
+        import tempfile
+
+        from scripts import auth_login
+
+        class Ctx:
+            def __init__(self, fail: bool = False) -> None:
+                self.fail = fail
+
+            def storage_state(self, path: str) -> None:
+                if self.fail:
+                    raise RuntimeError("browser closed")
+                Path(path).write_text('{"cookies": []}')
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            other = d / "carol_instagram_state.json"
+            other.write_text("CAROL")
+            mine = d / "dave_instagram_state.json"
+            auth_login._save_session_atomically(Ctx(), mine)
+            self.assertEqual(mine.read_text(), '{"cookies": []}')
+            with self.assertRaises(RuntimeError):
+                auth_login._save_session_atomically(Ctx(fail=True), mine)
+            self.assertEqual(mine.read_text(), '{"cookies": []}')  # previous kept
+            self.assertEqual(other.read_text(), "CAROL")
+            self.assertEqual(sorted(p.name for p in d.iterdir()),
+                             ["carol_instagram_state.json", "dave_instagram_state.json"])
+
+    def test_locale_and_timezone_reach_the_login(self) -> None:
+        from scripts import auth_login
+
+        argv = ["auth_login", "--username", "dave", "--locale", "es-ES",
+                "--timezone-id", "Europe/Madrid"]
+        with mock.patch.object(sys, "argv", argv), mock.patch.object(
+            auth_login, "_launch_and_save", return_value=("dave", Path("/x/dave"))
+        ) as launch:
+            self.assertEqual(auth_login.main(), 0)
+        self.assertEqual(launch.call_args.kwargs["locale"], "es-ES")
+        self.assertEqual(launch.call_args.kwargs["timezone_id"], "Europe/Madrid")
+
+
 class ResolveSessionHandleTests(unittest.TestCase):
     def test_real_username_wins_over_a_typo(self) -> None:
         self.assertEqual(auth.resolve_session_handle("juan", "juanr"), "juanr")
@@ -155,6 +199,10 @@ class ClampLimitTests(unittest.TestCase):
         from instagram_sdk.cursors import PageResult
 
         class FakeRuntime:
+            def resolve(self, account):
+                from instagram_sdk.accounts import Account
+                return Account("carol", Path("/x/carol_instagram_state.json"))
+
             async def run(self, account, fn):
                 return await fn(object())
 
