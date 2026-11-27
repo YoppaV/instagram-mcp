@@ -50,6 +50,7 @@ from instagram_sdk.models import (
 )
 from instagram_sdk.runtime import Runtime
 from instagram_sdk.settings import Settings
+from instagram_sdk.transport import TransportConfigError, TransportSettings, serve_http
 
 load_dotenv()
 
@@ -825,9 +826,12 @@ async def get_following(
     return await _follow_list("following", username, limit, cursor, account)
 
 
-async def _amain() -> None:
+async def _amain(transport_settings: TransportSettings | None = None) -> None:
     try:
-        await mcp.run_stdio_async()
+        if transport_settings is not None and transport_settings.is_http:
+            await serve_http(mcp, transport_settings)
+        else:
+            await mcp.run_stdio_async()
     finally:
         # Background bulk jobs first: they end as "interrupted" (resumable).
         await _stop_bulk_tasks()
@@ -845,7 +849,14 @@ def main() -> None:
     )
     import anyio
 
-    anyio.run(_amain)
+    # Read before starting anything: a bad transport config (HTTP without a
+    # token, a '*' host) stops here with a message, not halfway up.
+    try:
+        transport_settings = TransportSettings.from_env()
+    except TransportConfigError as exc:
+        print(f"instagram-mcp: {exc}", file=sys.stderr)
+        raise SystemExit(2) from None
+    anyio.run(_amain, transport_settings)
 
 
 if __name__ == "__main__":
