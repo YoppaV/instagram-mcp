@@ -10,7 +10,7 @@ llamada hace como mucho 20 peticiones a Instagram y 8 páginas.
 | Tool | Parámetros | Operaciones (`ops.py`) |
 |------|-----------|----------------|
 | `auth_status` | — | sin red; lee el fichero de sesión y el estado de la cuenta (`state`, `block`) |
-| `get_saved_posts` | `collection_id?`, `limit=24` | REST `saved_posts`; con colección, GraphQL `saved_collection` |
+| `get_saved_posts` | `collection_id?`, `limit=24` | REST `saved_posts`; con colección, REST `collection_feed` (respaldo GraphQL `saved_collection`) |
 | `get_saved_collections` | — | GraphQL `saved_collections` (raíz `viewer.collections_unified_with_auto_collections`) |
 | `get_home_feed` | `limit=15` | HTML de `/` (o `home_first`) + `home_page` |
 | `get_user_profile` | `username` | `search_box` (username → id, coincidencia exacta; respaldo `profile_posts_first`) + `profile_info` |
@@ -32,9 +32,10 @@ llamada hace como mucho 20 peticiones a Instagram y 8 páginas.
   el feed REST de guardados las traen. `get_user_posts(include_reels=True)` y
   `get_post` las completan con la pestaña Reels del autor (primera página + 2 más,
   best-effort: un fallo ahí no hace fallar la tool).
-- **Saved** ya no usan el handle: el feed REST y las consultas `viewer` van por
-  la cookie de sesión. Una colección leída por GraphQL llega **sin `video_url`
-  ni `taken_at`** (la web no los pide en esa vista).
+- **Saved** ya no usan el handle: los feeds REST y las consultas `viewer` van por
+  la cookie de sesión. Una colección se lee primero por REST (trae `video_url`);
+  si ese endpoint desaparece, el respaldo GraphQL llega **sin `video_url` ni
+  `taken_at`** (la web no los pide en esa vista).
 - **Paginación**: la gobierna el cursor de Instagram, no los ítems que pasan el
   filtro; un perfil casi todo reels ya no corta `get_user_posts` antes de tiempo.
 - **`download_media`** re-fetchea el post fresco antes de descargar porque las URLs

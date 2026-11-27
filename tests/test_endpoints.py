@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _fakes import FakeClient, load, text  # noqa: E402
 
 from instagram_sdk.endpoints import home, media, post, profile, saved  # noqa: E402
-from instagram_sdk.errors import OperationFailedError  # noqa: E402
+from instagram_sdk.errors import EndpointGoneError, OperationFailedError  # noqa: E402
 
 
 def _run(coro):
@@ -51,15 +51,24 @@ class SavedTests(unittest.TestCase):
         _run(saved.fetch_saved(ig, collection_id="ALL_MEDIA_AUTO_COLLECTION", limit=5))
         self.assertEqual(ig.ops_called(), ["saved_posts"])
 
-    def test_collection_goes_through_graphql(self) -> None:
-        ig = FakeClient(graphql={"saved_collection": [load("gql_collection_media.json")]})
+    def test_collection_prefers_rest_feed(self) -> None:
+        ig = FakeClient(rest={"collection_feed": [load("api_feed_collection.json")]})
+        posts = _run(saved.fetch_saved(ig, collection_id="17900000000000001", limit=2))
+        self.assertEqual([p.id for p in posts], ["7001_80", "7002_81"])
+        self.assertEqual(ig.calls[0][2]["path_params"], {"collection_id": "17900000000000001"})
+
+    def test_collection_falls_back_to_graphql(self) -> None:
+        gone = EndpointGoneError("collection_feed", "404 HTML")
+        ig = FakeClient(rest={"collection_feed": [gone]},
+                        graphql={"saved_collection": [load("gql_collection_media.json")]})
         posts = _run(saved.fetch_saved(ig, collection_id="17900000000000001", limit=2))
         self.assertEqual([p.id for p in posts], ["7001_80", "7002_81"])
         self.assertIsNone(posts[0].taken_at)  # this surface carries no taken_at (R3)
-        self.assertEqual(ig.calls[0][2], {"collection_id": "17900000000000001", "after": None})
+        self.assertEqual(ig.calls[1][2], {"collection_id": "17900000000000001", "after": None})
 
     def test_unknown_collection_is_an_error_not_empty(self) -> None:
-        ig = FakeClient(graphql={"saved_collection": [{"data": {"fetch__MediaCollection": None}}]})
+        ig = FakeClient(rest={"collection_feed": [OperationFailedError("collection_feed", "fail")]},
+                        graphql={"saved_collection": [{"data": {"fetch__MediaCollection": None}}]})
         with self.assertRaises(ValueError):
             _run(saved.fetch_saved(ig, collection_id="123", limit=5))
 

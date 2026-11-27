@@ -83,7 +83,7 @@ def collection_url(handle: str, collection_id: str) -> str:
 
 
 def shortcode_to_pk(shortcode: str) -> str:
-    """Numeric media id from a shortcode (base 64 over its first 11 chars)."""
+    """Numeric media id from a shortcode (base 64 over its first 11 chars; checked against a real pair during discovery)."""
     code = extract_shortcode(shortcode)[:11]
     value = 0
     for char in code:

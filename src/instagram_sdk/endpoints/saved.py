@@ -18,6 +18,7 @@ from ..cursors import (
     page_budget,
     paginate,
 )
+from ..errors import EndpointGoneError, OperationFailedError
 from ..models import Collection, Post
 from ..parsers import connection_collections, connection_cursor, connection_posts, extract_saved, rest_cursor
 
@@ -44,8 +45,25 @@ async def fetch_saved_page(
 
     else:
         cid = str(collection_id).strip()
+        # REST collection feed first: it still answers and, unlike the GraphQL
+        # page the web uses now, carries video_versions and taken_at (D3/R3).
+        # If it is gone or refuses the id, the walk switches to GraphQL; the
+        # choice is made on the first page so cursors never mix.
+        mode = {"rest": True}
 
         async def fetch_page(upstream: str | None) -> tuple[list[Post], str | None]:
+            if mode["rest"]:
+                try:
+                    body = await ig.rest(
+                        "collection_feed",
+                        path_params={"collection_id": cid},
+                        query={"max_id": upstream},
+                    )
+                    return extract_saved(body), rest_cursor(body)
+                except (EndpointGoneError, OperationFailedError):
+                    if upstream is not None:
+                        raise
+                    mode["rest"] = False
             root = await ig.graphql("saved_collection", collection_id=cid, after=upstream)
             if root is None:
                 raise ValueError(

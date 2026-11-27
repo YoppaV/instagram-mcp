@@ -74,10 +74,10 @@ class ShortcodeToPkTests(unittest.TestCase):
     def test_known_pair(self) -> None:
         from instagram_sdk.endpoints._ids import shortcode_to_pk
 
-        self.assertEqual(shortcode_to_pk("DgGMNAtNEpU"), "4036967786653960788")
+        self.assertEqual(shortcode_to_pk("Cabc-_XyZ09"), "2781944668786105661")
         self.assertEqual(
-            shortcode_to_pk("https://www.instagram.com/reel/DgGMNAtNEpU/"),
-            "4036967786653960788",
+            shortcode_to_pk("https://www.instagram.com/reel/Cabc-_XyZ09/"),
+            "2781944668786105661",
         )
 
 

@@ -393,8 +393,10 @@ _GRAPHQL_OPS: tuple[GraphQLOp, ...] = (
 _REST_OPS: tuple[RestOp, ...] = (
     RestOp(name="saved_posts", path="/api/v1/feed/saved/posts/", status="V"),
     RestOp(name="user_info", path="/api/v1/users/{user_id}/info/", cursor_param=None),
-    # Not used by any tool: the web no longer calls it (see D3/R3).
-    RestOp(name="collection_feed", path="/api/v1/feed/collection/{collection_id}/posts/"),
+    # The web now reads collections over GraphQL, but this still answers (probed
+    # 2026-11-27) and carries video_versions/taken_at; used first (D3/R3).
+    RestOp(name="collection_feed", path="/api/v1/feed/collection/{collection_id}/posts/",
+           status="V"),
 )
 
 

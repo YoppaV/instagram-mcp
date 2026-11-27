@@ -304,7 +304,7 @@ Current map (verified November 2026, web revision 1056444526):
 
 | Tool | Operations (`ops.py`) |
 |---|---|
-| `get_saved_posts` | REST `saved_posts`; with a collection: `saved_collection` |
+| `get_saved_posts` | REST `saved_posts`; with a collection: REST `collection_feed` (fallback `saved_collection`) |
 | `get_saved_collections` | `saved_collections` |
 | `get_home_feed` | `/` HTML (or `home_first`) + `home_page` |
 | `get_user_profile` | `search_box` (username → id) + `profile_info` |
