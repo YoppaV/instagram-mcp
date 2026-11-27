@@ -57,6 +57,7 @@ src/instagram_sdk/
 ├── pacer.py       pausas + tope por llamada + gancho del presupuesto
 ├── cursors.py     bucle de paginación + cursor opaco
 ├── settings.py    única lectura de variables de entorno
+├── transport.py   stdio (defecto) o streamable-http con bearer token y allowed_hosts
 ├── errors.py      errores tipados
 ├── auth.py        storage_state, UA y Client Hints
 ├── models.py · parsers.py · downloader.py
@@ -69,6 +70,8 @@ scripts/bulk_download.py  la descarga masiva desde terminal (mismo trabajo que l
 tests/                    unittest stdlib, fixture-driven, sin red ni navegador real
 tests/fixtures/           sintéticas/anonimizadas (gql_*, api_*, err_*, *.html)
 docs/TOOLS.md             tabla de las 18 tools y sus operaciones
+docs/DEPLOY.md            servir por HTTP en Docker (NAS): token, hosts, sesión, D14
+Dockerfile · deploy/      imagen Playwright no root + compose de ejemplo (sin secretos)
 ```
 
 ## Comandos
@@ -186,3 +189,14 @@ unittest en 3.10 y 3.12 como el CI) y reusa los slash-commands de `.claude/comma
 - `../../mcp/twitter-mcp/`, `../../mcp/linkedin-mcp/` — MCP hermanos (misma forma:
   skill `mcp-readonly-server`).
 - `../../tools/social-ingest/` — consumidor de `instagram_sdk` como librería.
+
+## Despliegue HTTP (NAS)
+- `INSTAGRAM_MCP_TRANSPORT=streamable-http` sirve por HTTP (`transport.py`); stdio
+  sigue por defecto. Sin token (`INSTAGRAM_MCP_BEARER_TOKEN_FILE` o `_TOKEN`, ≥32
+  caracteres) **no arranca**; `/healthz` es lo único sin token. `allowed_hosts`
+  explícitos, `*` rechazado. No metas el token en el repo, ni en `deploy/`.
+- **D14**: el lock, el presupuesto y el estado de bloqueo son ficheros de UNA
+  máquina. Si el NAS sirve una cuenta, es el único que conduce navegador para
+  ella; el PC se conecta por HTTP y solo conserva el login headed.
+- El contenedor monta las sesiones en solo lectura; el servidor nunca reescribe
+  una sesión.

@@ -1,0 +1,10 @@
+# Only what the image needs goes into the build context. Sessions, .env,
+# secrets and local state must never reach an image layer.
+*
+!requirements.txt
+!pyproject.toml
+!README.md
+!LICENSE
+!src/
+src/**/__pycache__
+src/*.egg-info

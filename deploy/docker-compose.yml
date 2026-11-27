@@ -1,0 +1,71 @@
+# instagram-mcp on a home NAS — EXAMPLE values, no secrets.
+#
+# Layout followed (UGREEN UGOS Pro, adapt to yours):
+#   stack (this file + .env + secrets/):  /volume1/HDD-Archivo/Docker-Stacks/stacks/instagram-mcp/
+#   live data (SSD):                       /volume2/SSD-Proyectos/Instagram-MCP/{sessions,state,downloads}
+#   source to build from:                  /volume2/SSD-Proyectos/Instagram-MCP/repo
+#
+# Before `docker compose up -d`: copy .env.example to .env and fill it, write
+# the token to secrets/instagram_mcp_token (chmod 600), copy the session
+# files into the sessions folder. See docs/DEPLOY.md.
+#
+# LAN / Tailscale only: never publish this port to the internet, never add it
+# to `tailscale serve`/`funnel`.
+
+name: instagram-mcp
+
+services:
+  instagram-mcp:
+    image: instagram-mcp:${INSTAGRAM_MCP_IMAGE_TAG:-0.1.0}
+    build:
+      context: ${INSTAGRAM_MCP_REPO:-/volume2/SSD-Proyectos/Instagram-MCP/repo}
+    container_name: instagram-mcp
+    restart: unless-stopped
+    init: true
+    # Owner of the data folders on the NAS (`id -u` / `id -g` over ssh).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    environment:
+      INSTAGRAM_MCP_TRANSPORT: streamable-http
+      INSTAGRAM_MCP_HOST: 0.0.0.0
+      INSTAGRAM_MCP_PORT: "8000"
+      # Every Host header clients will use: LAN IP, NAS name, Tailscale name/IP.
+      INSTAGRAM_MCP_ALLOWED_HOSTS: ${INSTAGRAM_MCP_ALLOWED_HOSTS:?set INSTAGRAM_MCP_ALLOWED_HOSTS in .env}
+      INSTAGRAM_MCP_BEARER_TOKEN_FILE: /run/secrets/instagram_mcp_token
+      INSTAGRAM_SESSION_DIR: /data/sessions
+      INSTAGRAM_STATE_DIR: /data/state
+      INSTAGRAM_DOWNLOADS_DIR: /data/downloads
+      INSTAGRAM_DEFAULT_ACCOUNT: ${INSTAGRAM_DEFAULT_ACCOUNT:-}
+      BROWSER_HEADLESS: "true"
+      BROWSER_IDLE_TIMEOUT_S: "180"
+      INSTAGRAM_LOG_LEVEL: ${INSTAGRAM_LOG_LEVEL:-WARNING}
+      HOME: /tmp
+    secrets:
+      - instagram_mcp_token
+    ports:
+      # 0.0.0.0 so both the LAN and the Tailscale interface reach it; the
+      # router does not forward this port.
+      - "${INSTAGRAM_MCP_PUBLISHED_PORT:-8765}:8000"
+    volumes:
+      # Sessions are produced on the PC (headed login) and only read here.
+      - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/sessions:/data/sessions:ro
+      - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/state:/data/state
+      - ${INSTAGRAM_MCP_DATA:-/volume2/SSD-Proyectos/Instagram-MCP}/downloads:/data/downloads
+    tmpfs:
+      - /tmp:size=512m
+    # Chromium needs more than Docker's default 64 MB of /dev/shm.
+    shm_size: "1gb"
+    mem_limit: 2g
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+secrets:
+  instagram_mcp_token:
+    file: ./secrets/instagram_mcp_token

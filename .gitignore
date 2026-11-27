@@ -34,3 +34,7 @@ src/*.egg-info/
 .vscode/
 .idea/
 *.swp
+
+# Deployment secrets (bearer token files) — never versioned
+deploy/secrets/
+secrets/

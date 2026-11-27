@@ -261,6 +261,14 @@ list above if you keep it somewhere else. Check the registration with
 }
 ```
 
+**Remote (home server over HTTP)** — the server can also run as a
+streamable-http service in Docker on an always-on box (a NAS) and Claude Code
+connects to it with
+`claude mcp add --transport http instagram http://<nas>:8765/mcp --header "Authorization: Bearer <token>"`.
+HTTP mode refuses to start without a bearer token and only accepts the
+`Host` names you list. LAN/Tailscale only, and then that box must be the only
+one driving a browser for the account — see [docs/DEPLOY.md](docs/DEPLOY.md).
+
 ## Use from Python (as a library)
 
 The `instagram_sdk` package is the underlying read-only SDK. It powers the
