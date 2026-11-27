@@ -402,6 +402,8 @@ class ToolRegistrationTests(unittest.TestCase):
             "start_bulk_download",
             "bulk_download_status",
             "cancel_bulk_download",
+            "get_followers",
+            "get_following",
         }
         self.assertEqual(names, expected)
 

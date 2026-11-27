@@ -758,6 +758,73 @@ async def _stop_bulk_tasks() -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+# --------------------------------------------------------------------------
+# Followers / following
+# --------------------------------------------------------------------------
+from instagram_sdk.endpoints import friendships  # noqa: E402
+
+
+async def _follow_list(kind: str, username: str, limit: int, cursor: str | None,
+                       account: str | None) -> dict[str, Any]:
+    handle = normalize_username(username)
+    return await _paged(
+        f"get_{kind}", account, cursor, {"username": handle.casefold()},
+        lambda ig, start: friendships.fetch_follow_page(
+            ig, kind, username=handle, limit=_clamp_limit(limit), start=start,
+        ),
+    )
+
+
+@mcp.tool()
+async def get_followers(
+    username: str,
+    limit: int = 24,
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """List the accounts that follow a user.
+
+    Returns ``{items, next_cursor, stopped}`` with one user per item (``pk``,
+    ``username``, ``full_name``, ``is_verified``, ``is_private``,
+    ``profile_pic_url``). This is the request Instagram watches most: each
+    call reads at most 5 pages of 12 (60 users), waits 30 s after the previous
+    followers/following call of the account, and the account has its own
+    budget (30 pages per hour, 100 per day). It never chains by itself — pass
+    ``next_cursor`` back to read on. Exporting the followers of large
+    accounts is not a goal. A private account you do not follow fails with a
+    clear error before any list request.
+
+    Args:
+        username: Instagram username without the leading "@".
+        limit: Max users to return (default 24, capped at 50).
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
+    """
+    return await _follow_list("followers", username, limit, cursor, account)
+
+
+@mcp.tool()
+async def get_following(
+    username: str,
+    limit: int = 24,
+    cursor: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """List the accounts a user follows.
+
+    Same shape, limits and budget as `get_followers` (they share it).
+
+    Args:
+        username: Instagram username without the leading "@".
+        limit: Max users to return (default 24, capped at 50).
+        cursor: ``next_cursor`` from a previous call, to continue.
+        account: Which logged-in account makes the request (a handle from
+            `list_accounts`). Omit for the default account.
+    """
+    return await _follow_list("following", username, limit, cursor, account)
+
+
 async def _amain() -> None:
     try:
         await mcp.run_stdio_async()
