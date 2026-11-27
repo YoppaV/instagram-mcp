@@ -623,10 +623,147 @@ async def search_hashtag(
     )
 
 
+# --------------------------------------------------------------------------
+# Bulk downloads (background jobs; see instagram_sdk.bulk)
+# --------------------------------------------------------------------------
+from instagram_sdk import bulk as _bulk  # noqa: E402
+
+# job_id -> task. Kept so the tasks are not garbage-collected and can be
+# stopped cleanly when the server exits.
+_bulk_tasks: dict[str, Any] = {}
+
+
+def _downloads_dir() -> Any:
+    return Settings.from_env().downloads_dir
+
+
+@mcp.tool()
+async def start_bulk_download(
+    source: str,
+    target: str | None = None,
+    download_videos: bool = False,
+    mode: str = "auto",
+    known_stop: int | None = None,
+    max_pages: int | None = None,
+    max_posts: int | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Start (or resume) a background bulk download; returns at once.
+
+    Saves every post of a source to ``<downloads>/<account>/`` without
+    repeating what is already there (a per-account manifest keyed by post id
+    and media index, ``manifest.sqlite3`` in that folder). The job runs in
+    the background in small paced batches (one feed page each), respecting
+    the account's hourly/daily budget and leaving a reserve for other tools;
+    it may take hours for a large source. Media URLs come from the feed
+    itself, so there is no extra request per post. Returns a status summary,
+    never images. Follow it with `bulk_download_status`; stop it with
+    `cancel_bulk_download`. If the server stops, the job is resumable: call
+    this again with the same arguments. One job per account at a time.
+
+    Args:
+        source: ``saved`` (all saved posts), ``collection`` (one
+            save-collection) or ``user_posts`` (a profile's whole grid,
+            reels included).
+        target: The collection id (from `get_saved_collections`) for
+            ``collection``; the username for ``user_posts``.
+        download_videos: Also save videos (streamed to disk). Off by default:
+            videos are recorded as skipped and fetched by a later run with
+            this on.
+        mode: ``auto`` (default: first run walks everything and saves a
+            resume point; later runs scan the newest posts, stop after
+            ``known_stop`` already-saved ones in a row, then finish any
+            unfinished first walk), ``incremental`` (only the newest posts) or
+            ``full`` (walk everything again; saved files are not re-fetched).
+        known_stop: Consecutive already-saved posts that end the scan of the
+            newest posts (default 8).
+        max_pages: Stop this run after this many feed pages (resume later).
+        max_posts: Stop this run after this many new posts (resume later).
+        account: Which logged-in account (a handle from `list_accounts`).
+            Omit for the default account.
+    """
+    import asyncio
+
+    runtime = get_runtime()
+    acct = runtime.resolve(account)
+    spec = _bulk.make_spec(source, target, download_videos=download_videos, mode=mode,
+                           known_stop=known_stop, max_pages=max_pages, max_posts=max_posts)
+    runtime.state.check(acct)  # a held account fails now, not in the background
+    job = _bulk.BulkJob(runtime, acct.handle, spec, downloads_dir=_downloads_dir())
+    try:
+        status = job.claim()
+    except _bulk.BulkJobBusyError as exc:
+        raise ValueError(str(exc)) from None
+    task = asyncio.get_running_loop().create_task(job.run(), name=f"bulk:{job.job_id}")
+    _bulk_tasks[job.job_id] = task
+    task.add_done_callback(lambda t, jid=job.job_id: _bulk_tasks.pop(jid, None))
+    return status
+
+
+@mcp.tool()
+async def bulk_download_status(
+    job_id: str | None = None,
+    account: str | None = None,
+) -> dict[str, Any]:
+    """Progress of bulk downloads. No network.
+
+    Returns ``{jobs: [...]}``; each job has ``status`` (``running`` |
+    ``waiting`` for budget | ``done`` | ``partial`` (a run cap was reached) |
+    ``cancelled`` | ``error`` | ``interrupted`` (the server stopped; start it
+    again to resume)), ``this_run`` counters (pages, posts_new, downloaded,
+    skipped, failed, bytes...), ``manifest_totals`` for the source,
+    ``resumable``, ``error`` and the manifest path.
+
+    Args:
+        job_id: One job (as returned by `start_bulk_download`). Omit to list.
+        account: List only this account's jobs. Omit (with no job_id) for all.
+    """
+    downloads_dir = _downloads_dir()
+    if job_id:
+        found = _bulk.job_status(downloads_dir, job_id)
+        if found is None:
+            raise ValueError(f"no bulk job {job_id!r}")
+        return {"jobs": [found]}
+    runtime = get_runtime()
+    if account is not None and str(account).strip():
+        handles = [runtime.resolve(account).handle]
+    else:
+        handles = [a.handle for a in runtime.registry.list()]
+    return {"jobs": _bulk.list_jobs(downloads_dir, handles)}
+
+
+@mcp.tool()
+async def cancel_bulk_download(job_id: str) -> dict[str, Any]:
+    """Stop a bulk download (within a few seconds, from any process).
+
+    What was saved stays saved and the resume point is kept: calling
+    `start_bulk_download` again with the same source continues. No network.
+
+    Args:
+        job_id: The job, as returned by `start_bulk_download`.
+    """
+    found = _bulk.request_cancel(_downloads_dir(), job_id)
+    if found is None:
+        raise ValueError(f"no bulk job {job_id!r}")
+    return found
+
+
+async def _stop_bulk_tasks() -> None:
+    import asyncio
+
+    tasks = list(_bulk_tasks.values())
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def _amain() -> None:
     try:
         await mcp.run_stdio_async()
     finally:
+        # Background bulk jobs first: they end as "interrupted" (resumable).
+        await _stop_bulk_tasks()
         # Same event loop as the tools: close Chromium and the driver cleanly.
         if _runtime is not None:
             await _runtime.shutdown()

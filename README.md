@@ -37,6 +37,9 @@ HTTP.
 | `get_post_comments` | `id_or_url` (shortcode, URL or media id), `limit` (default 20), `cursor`, `include_replies` (default false), `account` | page of comments |
 | `search_users` | `query`, `limit` (default 10), `account` | list of users |
 | `search_hashtag` | `tag` (with or without `#`), `limit` (default 24), `cursor`, `account` | page of posts |
+| `start_bulk_download` | `source` (`saved` \| `collection` \| `user_posts`), `target`, `download_videos`, `mode`, `known_stop`, `max_pages`, `max_posts`, `account` | job status (starts a background job) |
+| `bulk_download_status` | `job_id` (optional), `account` | `{jobs: [...]}` (no network) |
+| `cancel_bulk_download` | `job_id` | job status (no network) |
 
 Tools return plain JSON (dataclasses serialized to dicts). `download_media`
 additionally returns inline `Image` objects for any image bytes it fetched.
@@ -52,6 +55,40 @@ different tool, account or query.
 **Accounts.** Every tool takes an optional `account` (a handle from
 `list_accounts`). Without it the default account is used: see
 [Several accounts](#several-accounts).
+
+### Bulk downloads
+
+`start_bulk_download` saves a whole source — all saved posts, one
+save-collection, or a profile's grid — to `<downloads>/<account>/` and returns
+at once; the work runs as a **background job** in small batches (one feed
+page each, paced, inside the account budget and leaving a reserve of 40/h and
+150/day for other tools). Nothing is fetched twice: a per-account manifest
+(`<downloads>/<account>/manifest.sqlite3`, keyed by post id + media index)
+records every file, and files are shared between sources. Media URLs come
+from the feed pages themselves (no extra request per post); bytes are
+streamed to disk through a temporary file, so videos (opt-in,
+`download_videos`) never sit in RAM.
+
+- First run (`mode="auto"`): walks the whole source, saving a resume point
+  after each page. Later runs scan the newest posts and stop after
+  `known_stop` (default 8) already-saved posts in a row, then finish any
+  first walk that was cut short. `mode="incremental"` only scans the newest;
+  `mode="full"` walks everything again (without re-downloading).
+- `max_pages` / `max_posts` cap one run (status `partial`; start again to
+  continue). If the MCP server stops, the job shows as `interrupted` and the
+  same call resumes it. One job per account at a time.
+- If the budget still runs out (other tools used it), the job stops as
+  `partial` with its resume point kept; an Instagram signal or an unusable
+  state directory ends it as `error`.
+- For long first downloads, the same job runs from a terminal (it shares
+  the lock, budget and manifest with the MCP servers):
+
+```bash
+venv/bin/python -m scripts.bulk_download start --source collection --target <collection_id>
+venv/bin/python -m scripts.bulk_download start --source user_posts --target <username> --max-pages 1
+venv/bin/python -m scripts.bulk_download status
+venv/bin/python -m scripts.bulk_download cancel <job_id>
+```
 
 ## Requirements
 

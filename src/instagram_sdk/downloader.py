@@ -212,3 +212,104 @@ def write_atomic(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
+
+
+# --------------------------------------------------------------------------
+# Streaming to disk (bulk downloads)
+# --------------------------------------------------------------------------
+_STREAM_CHUNK = 256 * 1024
+
+
+@dataclass(frozen=True)
+class StreamOutcome:
+    """Result of ``stream_to_file``: the file is on disk only when ``ok``."""
+
+    ok: bool
+    path: Path | None
+    byte_size: int
+    sha256: str | None
+    content_type: str
+    reason: str | None
+
+
+def existing_media_file(directory: Path, stem: str) -> Path | None:
+    """A finished file ``<stem>.<ext>`` already in ``directory`` (any extension)."""
+    if not directory.is_dir():
+        return None
+    for candidate in sorted(directory.glob(f"{stem}.*")):
+        if candidate.suffix == ".part" or candidate.name.startswith("."):
+            continue
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def sha256_of(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(_STREAM_CHUNK), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+async def stream_to_file(
+    client: "httpx.AsyncClient",
+    url: str,
+    *,
+    path_for_ext,
+    max_bytes: int | None,
+) -> StreamOutcome:
+    """Stream ``url`` straight to disk; never holds the whole body in RAM.
+
+    ``path_for_ext(ext)`` returns the final path once the Content-Type is
+    known. Bytes go to a unique ``.part`` file in the same folder, hashed on
+    the way, and are renamed into place only when complete (``os.replace``):
+    a crash leaves at most a stray ``.part``, never half a media file.
+    """
+    import hashlib
+
+    tmp: str | None = None
+    try:
+        async with client.stream("GET", url) as response:
+            status = response.status_code
+            if status == 404:
+                return StreamOutcome(False, None, 0, None, "", REASON_HTTP_404)
+            if status >= 400:
+                return StreamOutcome(False, None, 0, None, "", REASON_DOWNLOAD_ERROR)
+            content_type = response.headers.get("content-type", "") or ""
+            length = response.headers.get("content-length")
+            if max_bytes is not None and length and length.isdigit() and int(length) > max_bytes:
+                return StreamOutcome(False, None, 0, None, content_type, REASON_TOO_LARGE)
+            fmt = content_type_to_format(content_type, extension_from_url(url))
+            final = path_for_ext(format_to_extension(fmt))
+            final.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=f".{final.name}.", suffix=".part",
+                                       dir=str(final.parent))
+            digest = hashlib.sha256()
+            total = 0
+            with os.fdopen(fd, "wb") as fh:
+                async for chunk in response.aiter_bytes(_STREAM_CHUNK):
+                    total += len(chunk)
+                    if max_bytes is not None and total > max_bytes:
+                        raise _TooLarge()
+                    digest.update(chunk)
+                    fh.write(chunk)
+            os.replace(tmp, final)
+            tmp = None
+            return StreamOutcome(True, final, total, digest.hexdigest(), content_type, None)
+    except _TooLarge:
+        return StreamOutcome(False, None, 0, None, "", REASON_TOO_LARGE)
+    except Exception:
+        return StreamOutcome(False, None, 0, None, "", REASON_DOWNLOAD_ERROR)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+class _TooLarge(Exception):
+    pass

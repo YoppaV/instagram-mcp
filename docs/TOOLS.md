@@ -29,6 +29,9 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
 | `get_post_comments` (sobre) | `id_or_url`, `limit=20`, `cursor?`, `include_replies=false` | `comments_first` (15) + `comments_page` (10/página); con respuestas, `comment_replies` por hilo |
 | `search_users` | `query`, `limit=10` | `search_box` (1 petición) |
 | `search_hashtag` (sobre) | `tag`, `limit=24`, `cursor?` | `keyword_first` + `keyword_page` con `query="#tag"` (≈24 posts/página, máx. 3 páginas) |
+| `start_bulk_download` | `source` (`saved`/`collection`/`user_posts`), `target?`, `download_videos=false`, `mode=auto`, `known_stop=8`, `max_pages?`, `max_posts?` | lanza un trabajo en segundo plano: una página del feed por lote (`saved_posts`, `collection_feed`/`saved_collection` o `profile_posts_*`), bytes del CDN fuera del lock |
+| `bulk_download_status` | `job_id?`, `account?` | sin red; lee el manifiesto |
+| `cancel_bulk_download` | `job_id` | sin red; marca el trabajo para que pare |
 
 ## Notas
 - **Transporte**: cada petición es un `fetch` dentro de una pestaña fija de
@@ -101,3 +104,32 @@ cuenta por defecto (`INSTAGRAM_DEFAULT_ACCOUNT` → `INSTAGRAM_SESSION_FILE` →
 - `SessionExpiredError` → re-login (`python -m scripts.auth_login`).
 - Chromium no arranca (WSL2/Linux) → `sudo venv/bin/python -m playwright install-deps chromium`;
   en Windows, repetir `venv\Scripts\python -m playwright install chromium`.
+
+## Descarga masiva (`bulk.py`, `manifest.py`, `scripts/bulk_download.py`)
+- **Manifiesto por cuenta**: `<downloads>/<cuenta>/manifest.sqlite3`, clave
+  `(pk, índice de media)`; tablas `media`, `posts`, `source_posts` (qué fuente listó
+  qué post) y `jobs` (cursor de reanudación, contadores, `cancel_requested`). Los
+  ficheros se comparten entre fuentes y usan el mismo nombre que `download_media`;
+  un fichero ya presente se adopta sin volver a bajarlo. Diario de SQLite por
+  defecto (sin WAL, por si la carpeta está en un recurso de red) y sin fsync por
+  fila; un manifiesto corrupto se aparta (`.corrupt-<ts>`) y se rehace.
+- **Lotes**: un lote = un `Runtime.run` = una página del feed. Las URLs salen del
+  propio feed; solo un vídeo sin `video_versions` en el feed (y solo con
+  `download_videos`) cuesta una navegación al post, como mucho 2 por lote. Pausa
+  de 25-50 s entre lotes; antes de cada lote mira el presupuesto de la cuenta y
+  espera (`waiting`) si invadiría la reserva de 40/h o 150/día. Una señal de
+  Instagram (bloqueo, challenge, sesión caducada) termina el trabajo en `error`,
+  sin reintentos. Dos `OperationFailedError` seguidos, también.
+  Un estado inutilizable (`StateUnavailableError`, el runtime falla en cerrado) también
+  termina en `error`. Si aun así se agota el presupuesto (`BudgetExceededError`), el
+  trabajo para como `partial` conservando el cursor, con la espera en `error`.
+- **Modos**: `auto` (primera pasada completa con cursor guardado por página; luego
+  cabeza incremental que para tras `known_stop` posts conocidos seguidos y, si la
+  primera pasada quedó a medias, la continúa desde el cursor; si ese cursor
+  caducó, recorre desde arriba sin volver a bajar nada), `incremental` y `full`.
+- **Estados**: `running`, `waiting`, `done`, `partial` (tope `max_pages`/`max_posts`),
+  `cancelled`, `error`, `interrupted` (el proceso murió: se deduce porque nadie tiene
+  el lock `<downloads>/<cuenta>/.bulk.lock`). Un trabajo por cuenta a la vez, entre
+  procesos. Reanudar = volver a lanzar la misma fuente.
+- **Escritura**: streaming a un `.part` único en la misma carpeta, con sha256 al
+  vuelo, y `os.replace` al terminar; nunca se carga un vídeo entero en RAM.
