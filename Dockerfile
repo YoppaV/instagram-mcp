@@ -14,11 +14,14 @@ WORKDIR /app
 
 # Dependencies first (cached layer), then the package itself.
 COPY requirements.txt ./
-RUN python3 -m venv /opt/venv \
- && /opt/venv/bin/pip install -r requirements.txt
+# The image has no python3-venv/ensurepip: create the venv without pip and
+# fill it with the system pip (`pip --python`).
+RUN python3 -m venv --without-pip /opt/venv \
+ && pip --python /opt/venv/bin/python install -r requirements.txt
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN /opt/venv/bin/pip install --no-deps . \
+RUN pip --python /opt/venv/bin/python install --no-deps . \
+ && rm -rf build \
  && mkdir -p /data/sessions /data/state /data/downloads \
  && chown -R pwuser:pwuser /data
 
