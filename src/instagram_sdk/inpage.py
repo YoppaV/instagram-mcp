@@ -8,8 +8,9 @@ discovery verified. Nothing is signed by hand beyond that.
 Every response goes through ``guard`` first. A blocking signal persists the
 account state, closes its context and raises — zero retries. Without a signal
 the result is classified (see ``classify_graphql``): OK, TOKEN (refresh tokens
-once), STALE (doc_id or response root changed — fails with a clear message;
-self-heal is a later PR), TRANSIT (one retry after a pause).
+once), STALE (doc_id or response root changed — one self-heal through
+``opsheal.Healer`` and one retry, else a clear error), TRANSIT (one retry
+after a pause).
 
 Endpoints only use ``bootstrap``, ``navigate_html``, ``rest`` and ``graphql``,
 so tests drive them with a small double.
@@ -34,9 +35,11 @@ from .errors import (
     SessionExpiredError,
     TokenError,
 )
+from .opsheal import is_unknown_doc_id
 from .tokens import Tokens, try_extract_tokens
 
 if TYPE_CHECKING:
+    from .opsheal import Healer
     from .users import UserIdCache
 
 log = logging.getLogger("instagram_sdk")
@@ -174,8 +177,10 @@ class InPageClient:
         on_block: OnBlock,
         table: Mapping[str, ops.Op] = ops.TABLE,
         user_ids: "UserIdCache | None" = None,
+        healer: "Healer | None" = None,
     ) -> None:
         self._actx = actx
+        self._healer = healer
         self._on_block = on_block
         self._table = table
         self.user_ids = user_ids
@@ -397,6 +402,9 @@ class InPageClient:
         op = self._table[op_name]
         if not isinstance(op, ops.GraphQLOp):
             raise TypeError(f"{op_name!r} is not a GraphQL operation")
+        if self._healer is not None:
+            op = self._healer.store.get(op)  # cached cure laid over the table
+        healed = False
         needs_did = "ig_did" in ops.template_holes(ops._thaw(op.variables))
         tokens = await self._ensure_tokens()
         token_refreshed = False
@@ -455,9 +463,12 @@ class InPageClient:
             # The exact shapes of token/stale errors are not observed yet, so be
             # tolerant: a stale-looking failure with tokens older than a minute
             # first refreshes the tokens (one normal navigation), then gives up.
+            # "GraphQL document with ID … was not found" is certainly a rotated
+            # doc_id: refreshing tokens would only waste a navigation.
             if not token_refreshed and (
                 kind == TOKEN
-                or (kind == STALE and tokens.age_s() > TOKEN_REFRESH_MIN_AGE_S)
+                or (kind == STALE and tokens.age_s() > TOKEN_REFRESH_MIN_AGE_S
+                    and not is_unknown_doc_id(body))
             ):
                 token_refreshed = True
                 await self.bootstrap(force=True)
@@ -465,11 +476,28 @@ class InPageClient:
                     raise TokenError(op_name, "tokens missing after refresh")
                 tokens = self._actx.tokens
                 continue
+            if kind == STALE and not healed and self._healer is not None:
+                # Never after a blocking signal: ``_guard`` already raised.
+                healed = True
+                if await self._healer.heal(self, op, params):
+                    op = self._healer.store.get(op)
+                    needs_did = "ig_did" in ops.template_holes(ops._thaw(op.variables))
+                    continue
             detail = _graphql_detail(body)
             if kind == TOKEN:
                 raise TokenError(op_name, f"tokens rejected (HTTP {status}): {detail}")
             if kind == TRANSIT:
                 raise OperationFailedError(op_name, f"HTTP {status} after retry")
+            if self._healer is not None:
+                self._healer.dump_debug(op_name, body)
+                outcome = self._healer.last_outcome if healed else None
+                if outcome == "unchanged":
+                    raise DocIdStaleError(
+                        op_name,
+                        f"{detail} (HTTP {status}). Self-heal found the same doc_id and "
+                        f"variables for {op.friendly_name}: the response changed shape; "
+                        "review the parser/root in instagram_sdk/ops.py.",
+                    )
             raise DocIdStaleError(
                 op_name,
                 f"{detail} (HTTP {status}). The doc_id or response root of "

@@ -268,7 +268,8 @@ resume point in `exc.next`), so nothing hydrated is lost.
 | `INSTAGRAM_ALLOW_DEGRADED_STATE` | `false` | `true` lets calls run when `INSTAGRAM_STATE_DIR` can't be written (no cross-process lock, budget only in memory). Off: such calls are refused. |
 | `INSTAGRAM_BLOCK_JS` | `true` | `false` lets instagram.com's scripts run in the tab (fallback mode, more RAM, not measured). |
 | `BROWSER_CHANNEL` | — | Optional Playwright channel (e.g. `chromium` for the new headless). |
-| `INSTAGRAM_LOG_LEVEL` | `WARNING` | Server log level (logs go to stderr). |
+| `INSTAGRAM_LOG_LEVEL` | `WARNING` | Server log level (logs go to stderr). `httpx`/`httpcore` always stay at `WARNING`, so signed CDN URLs are never logged. |
+| `INSTAGRAM_SELF_HEAL` | `true` | `false` turns off the automatic rediscovery of rotated `doc_id`s (see Maintenance). |
 
 ## Anti-bot precautions
 
@@ -381,7 +382,31 @@ Current map (verified November 2026, web revision 1056444526):
 | `get_user_reels` | `search_box` + `profile_reels_first` + `profile_reels_page` |
 | `get_post` / `download_media` | `/p/<shortcode>/` HTML, key `EMBED_POST_KEY` |
 
-Automatic rediscovery of rotated `doc_id`s is planned, not in this version.
+### Self-heal (automatic)
+
+Before you get to the manual steps, the server tries once by itself
+(`src/instagram_sdk/opsheal.py`). When a GraphQL answer has no usable root and
+no blocking signal — for a rotated id Instagram answers HTTP 200
+`{"errors":[{"message":"The GraphQL document with ID … was not found."}]}` — it:
+
+1. looks for the op's `queryID` in the Relay preloaders of the HTML already
+   loaded (free);
+2. opens the op's page (`HealRecipe` in `ops.py`) in a second tab **with JS**,
+   reads the `doc_id` + `variables` of the POST the web itself sends (that one
+   is aborted, the others go through), and also the preloaders of that page;
+3. as a last resort, the `<Name>_instagramRelayOperation` modules of the JS
+   bundles it downloaded;
+
+then stores the cure in `<state>/ops_cache.json` (global, re-templated with the
+repo's holes) and retries the call once. A cache entry older than
+`ops.TABLE_DATE` is ignored, so updating `ops.py` always wins. Limits: one cure
+per op every 6 h, two per account per day, each costs 8 requests of the
+budget (a real cure sent 7 to www.instagram.com: the document and the web's
+own GraphQL; every other instagram.com request of that tab — telemetry,
+ajax, logging — is aborted). A blocking signal on the heal page stops the account as anywhere else.
+If the heal finds the same `doc_id`, the error says the response changed shape
+(fix `root`/parsers). The failing body is kept in `<state>/debug/` (last 5,
+no headers or tokens). Ops with no recipe (`search_box`) only get step 3.
 
 ## Tests
 

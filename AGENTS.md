@@ -50,6 +50,7 @@ src/instagram_sdk/
 ├── inpage.py      InPageClient (fetch en página) + clasificación de respuestas
 ├── tokens.py      tokens del HTML (enmascarados en repr; nunca a logs ni disco)
 ├── ops.py         registro de operaciones (doc_id, variables, raíz)
+├── opsheal.py     autocuración de doc_id: caché state/ops_cache.json + Healer (página con JS)
 ├── guard.py       reglas de bloqueo
 ├── accounts.py    registro de cuentas, sidecar, estado, freno y presupuesto
 ├── locks.py       lock de fichero entre procesos

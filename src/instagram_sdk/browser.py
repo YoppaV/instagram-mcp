@@ -111,6 +111,8 @@ class AccountContext:
     # The account's pk as recorded in its session file / sidecar (fallback
     # for ``InPageClient.viewer_id``).
     user_id: str | None = None
+    # CDP ``Emulation.setUserAgentOverride`` params, reused by extra pages (self-heal).
+    ua_override: dict[str, Any] | None = None
 
     def alive(self) -> bool:
         if self.dead:
@@ -258,10 +260,8 @@ class BrowserManager:
             await context.add_init_script(_WEBDRIVER_SCRUB)
             page = await context.new_page()
             cdp = await context.new_cdp_session(page)
-            await cdp.send(
-                "Emulation.setUserAgentOverride",
-                user_agent_override(browser.version, str(fp_opts["locale"])),
-            )
+            ua_params = user_agent_override(browser.version, str(fp_opts["locale"]))
+            await cdp.send("Emulation.setUserAgentOverride", ua_params)
             blocked = blocked_resource_types(self._settings.block_js)
 
             async def _route(route: Any) -> None:
@@ -292,6 +292,7 @@ class BrowserManager:
             pacer=Pacer(max_requests_per_call=self._max_requests_per_call),
             cdp=cdp,
             user_id=account.user_id,
+            ua_override=dict(ua_params),
         )
         for event, target in (("crash", page), ("close", page), ("close", context)):
             try:
