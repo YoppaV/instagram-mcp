@@ -1,0 +1,9 @@
+{
+ "errors": [
+  {
+   "message": "A server error noncoercible_variable_value occured.",
+   "severity": "CRITICAL"
+  }
+ ],
+ "data": null
+}

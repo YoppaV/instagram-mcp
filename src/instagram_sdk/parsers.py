@@ -220,6 +220,21 @@ def parse_profile(user: dict[str, Any] | None) -> Profile | None:
     )
 
 
+def _cover_url(node: dict[str, Any]) -> str | None:
+    cover = node.get("cover_media")
+    if isinstance(cover, dict):
+        best = _largest_candidate(cover.get("image_versions2"))
+        if best:
+            return best.get("url")
+    # "All posts" carries no cover_media; its thumbnails are in cover_media_list.
+    for item in node.get("cover_media_list") or []:
+        if isinstance(item, dict):
+            best = _largest_candidate(item.get("image_versions2"))
+            if best:
+                return best.get("url")
+    return None
+
+
 def parse_collection(node: dict[str, Any] | None) -> Collection | None:
     """Build a ``Collection`` from a collections-connection node."""
     if not node or not isinstance(node, dict):
@@ -227,28 +242,48 @@ def parse_collection(node: dict[str, Any] | None) -> Collection | None:
     collection_id = str(node.get("collection_id") or "")
     if not collection_id:
         return None
-    cover = node.get("cover_media")
-    cover_url = None
-    if isinstance(cover, dict):
-        best = _largest_candidate(cover.get("image_versions2"))
-        cover_url = best.get("url") if best else None
     return Collection(
         collection_id=collection_id,
         name=node.get("collection_name") or "",
         media_count=node.get("collection_media_count"),
-        cover_image_url=cover_url,
+        cover_image_url=_cover_url(node),
     )
 
 
 # --------------------------------------------------------------------------
-# payload-level extractors (consumed by scraper)
+# connection- and payload-level extractors (consumed by endpoints)
 # --------------------------------------------------------------------------
+def _edges(connection: Any) -> list[dict[str, Any]]:
+    """``edges`` of a Relay connection, dicts only."""
+    if not isinstance(connection, dict):
+        return []
+    return [e for e in connection.get("edges") or [] if isinstance(e, dict)]
+
+
 def _connection_edges(payload: Any, connection_key: str) -> list[dict[str, Any]]:
     """Return ``data.<connection_key>.edges`` from a GraphQL payload."""
     data = (payload or {}).get("data") or {}
-    connection = data.get(connection_key) or {}
-    edges = connection.get("edges") or []
-    return [e for e in edges if isinstance(e, dict)]
+    return _edges(data.get(connection_key))
+
+
+def connection_cursor(connection: Any) -> str | None:
+    """``page_info.end_cursor`` when there is a next page, else ``None``."""
+    if not isinstance(connection, dict):
+        return None
+    info = connection.get("page_info") or {}
+    if not info.get("has_next_page"):
+        return None
+    cursor = info.get("end_cursor")
+    return str(cursor) if cursor else None
+
+
+def rest_cursor(payload: Any, *, next_key: str = "next_max_id",
+                more_key: str = "more_available") -> str | None:
+    """REST ``next_max_id`` when the feed says there is more, else ``None``."""
+    if not isinstance(payload, dict) or not payload.get(more_key):
+        return None
+    cursor = payload.get(next_key)
+    return str(cursor) if cursor not in (None, "") else None
 
 
 def _iter_media_nodes(items: Any) -> list[dict[str, Any]]:
@@ -263,13 +298,16 @@ def _iter_media_nodes(items: Any) -> list[dict[str, Any]]:
 
 
 _TIMELINE_CONNECTION_KEY = "xdt_api__v1__feed__timeline__connection"
+TIMELINE_CONNECTION_KEY = _TIMELINE_CONNECTION_KEY
 
 
-def extract_home(payload: dict[str, Any]) -> list[Post]:
-    """Home-feed connection payload → posts. Ads/netego nodes skipped."""
+def home_posts(connection: Any) -> list[Post]:
+    """Timeline connection → posts. Ads, suggestions and injected items skipped."""
     out: list[Post] = []
-    for edge in _connection_edges(payload, _TIMELINE_CONNECTION_KEY):
+    for edge in _edges(connection):
         node = edge.get("node") or {}
+        if node.get("ad") is not None or node.get("explore_story") is not None:
+            continue
         media = node.get("media")
         if not isinstance(media, dict) or media.get("injected"):
             continue
@@ -277,6 +315,12 @@ def extract_home(payload: dict[str, Any]) -> list[Post]:
         if post is not None:
             out.append(post)
     return out
+
+
+def extract_home(payload: dict[str, Any]) -> list[Post]:
+    """Home-feed connection payload → posts. Ads/netego nodes skipped."""
+    data = (payload or {}).get("data") or {}
+    return home_posts(data.get(_TIMELINE_CONNECTION_KEY))
 
 
 def extract_home_html(html: str) -> list[Post]:
@@ -291,15 +335,32 @@ def extract_home_html(html: str) -> list[Post]:
     return extract_home({"data": {_TIMELINE_CONNECTION_KEY: connection}})
 
 
-def extract_profile_posts(payload: dict[str, Any]) -> list[Post]:
-    """``PolarisProfilePostsQuery`` → posts (each edge node is the media)."""
+def connection_posts(connection: Any) -> list[Post]:
+    """A connection whose edge nodes are media (grid, collection) → posts."""
     out: list[Post] = []
-    key = "xdt_api__v1__feed__user_timeline_graphql_connection"
-    for edge in _connection_edges(payload, key):
+    for edge in _edges(connection):
         post = parse_post(edge.get("node") or {})
         if post is not None:
             out.append(post)
     return out
+
+
+def extract_profile_posts(payload: dict[str, Any]) -> list[Post]:
+    """``PolarisProfilePostsQuery`` → posts (each edge node is the media)."""
+    data = (payload or {}).get("data") or {}
+    return connection_posts(data.get("xdt_api__v1__feed__user_timeline_graphql_connection"))
+
+
+def extract_collection_media(payload: dict[str, Any]) -> list[Post]:
+    """``PolarisSavedCollectionPageWWWQuery`` → posts.
+
+    These nodes carry no ``video_versions`` nor ``taken_at``.
+    """
+    data = (payload or {}).get("data") or {}
+    collection = data.get("fetch__MediaCollection")
+    if not isinstance(collection, dict):
+        return []
+    return connection_posts(collection.get("media"))
 
 
 def _reels_edges(payload: Any) -> list[dict[str, Any]]:
@@ -317,10 +378,9 @@ def _reels_edges(payload: Any) -> list[dict[str, Any]]:
     return _connection_edges(payload, "xdt_api__v1__clips__user__connection_v2")
 
 
-def extract_reels(payload: dict[str, Any]) -> list[Reel]:
-    """``PolarisProfileReelsTabContentQuery`` (and ``_connection``) → reels."""
+def _reels_from_edges(edges: list[dict[str, Any]]) -> list[Reel]:
     out: list[Reel] = []
-    for edge in _reels_edges(payload):
+    for edge in edges:
         node = edge.get("node") or {}
         media = node.get("media")
         reel = parse_reel(media if isinstance(media, dict) else node)
@@ -329,15 +389,68 @@ def extract_reels(payload: dict[str, Any]) -> list[Reel]:
     return out
 
 
-def extract_collections(payload: dict[str, Any]) -> list[Collection]:
-    """``PolarisProfileSavedTabContentQuery`` → save-collections."""
+def connection_reels(connection: Any) -> list[Reel]:
+    """A clips connection → reels."""
+    return _reels_from_edges(_edges(connection))
+
+
+def extract_reels(payload: dict[str, Any]) -> list[Reel]:
+    """``PolarisProfileReelsTabContentQuery`` (and ``_connection``) → reels."""
+    return _reels_from_edges(_reels_edges(payload))
+
+
+# Auto-collections that are not lists of posts.
+_NON_POST_COLLECTION_IDS = frozenset({"AUDIO_AUTO_COLLECTION", "PLAYLIST_AUTO_COLLECTION"})
+_NON_POST_COLLECTION_TYPES = frozenset({"XDTAudioAutoCollection"})
+
+
+def connection_collections(connection: Any) -> list[Collection]:
+    """Save-collections connection → collections (audio/playlist dropped)."""
     out: list[Collection] = []
-    key = "xdt_api__v1__collections__list_graphql_connection"
-    for edge in _connection_edges(payload, key):
-        collection = parse_collection(edge.get("node") or {})
+    for edge in _edges(connection):
+        node = edge.get("node") or {}
+        if node.get("__typename") in _NON_POST_COLLECTION_TYPES:
+            continue
+        if node.get("collection_id") in _NON_POST_COLLECTION_IDS:
+            continue
+        collection = parse_collection(node)
         if collection is not None:
             out.append(collection)
     return out
+
+
+def extract_collections(payload: dict[str, Any]) -> list[Collection]:
+    """``PolarisProfileSavedTabContentQuery`` → save-collections.
+
+    Current root: ``data.viewer.collections_unified_with_auto_collections``;
+    the older ``xdt_api__v1__collections__list_graphql_connection`` is still
+    accepted.
+    """
+    data = (payload or {}).get("data") or {}
+    viewer = data.get("viewer")
+    if isinstance(viewer, dict) and isinstance(
+        viewer.get("collections_unified_with_auto_collections"), dict
+    ):
+        return connection_collections(viewer["collections_unified_with_auto_collections"])
+    return connection_collections(data.get("xdt_api__v1__collections__list_graphql_connection"))
+
+
+def search_users(connection: Any) -> list[User]:
+    """Search-box result → users (``is_private`` is not in this payload)."""
+    out: list[User] = []
+    if not isinstance(connection, dict):
+        return out
+    for row in connection.get("users") or []:
+        user = parse_user((row or {}).get("user") if isinstance(row, dict) else None)
+        if user is not None:
+            out.append(user)
+    return out
+
+
+def extract_search_users(payload: dict[str, Any]) -> list[User]:
+    """``PolarisSearchBoxRefetchableQuery`` → users."""
+    data = (payload or {}).get("data") or {}
+    return search_users(data.get("xdt_api__v1__fbsearch__topsearch_connection"))
 
 
 def extract_saved(payload: dict[str, Any]) -> list[Post]:

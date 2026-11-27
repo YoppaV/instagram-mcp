@@ -10,19 +10,23 @@ storage_state JSON written by ``scripts/auth_login.py``; the server discovers
 it from ``INSTAGRAM_SESSION_FILE``, the ``INSTAGRAM_SESSION_DIR`` directory,
 or — for backward compatibility — the legacy in-repo ``sessions/`` folder.
 
-All tools are read-only. Instagram detects automation aggressively, so calls
-are serialized through one browser and paced with randomized pauses — keep
-``limit`` values modest; every ``limit`` is capped at ``MAX_LIMIT``.
+All tools are read-only. Every Instagram request is an in-page ``fetch`` from
+one warm, resource-blocked tab, serialized behind a lock and paced with
+randomized pauses — keep ``limit`` values modest; every ``limit`` is capped at
+``MAX_LIMIT``. If Instagram pushes back (rate limit, challenge, checkpoint)
+the call fails with an explicit error and the account is held: nothing
+retries on its own.
 """
 
 from __future__ import annotations
 
+import logging
 import os
+import sys
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any
 
-import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP, Image
 
@@ -31,12 +35,9 @@ from mcp.server.fastmcp import FastMCP, Image
 # loader uses ``spec_from_file_location`` and the module has no
 # ``__package__``, which breaks relative imports.
 from instagram_sdk import downloader
-from instagram_sdk.auth import (
-    SessionExpiredError,
-    handle_from_session_path,
-    session_summary,
-)
-from instagram_sdk.browser import DEFAULT_IDLE_TIMEOUT_S, BrowserSession
+from instagram_sdk.accounts import Account
+from instagram_sdk.auth import session_summary
+from instagram_sdk.cursors import MAX_PAGES_PER_CALL
 from instagram_sdk.endpoints import home, media, post, profile, saved
 from instagram_sdk.models import (
     DownloadedMedia,
@@ -44,116 +45,35 @@ from instagram_sdk.models import (
     MediaItem,
     SkippedMedia,
 )
+from instagram_sdk.runtime import Runtime
+from instagram_sdk.settings import Settings
 
 load_dotenv()
 
 mcp = FastMCP("instagram-mcp")
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-_XDG_SESSION_DIR = Path.home() / ".instagram-mcp" / "sessions"
-_LEGACY_SESSION_DIR = _PROJECT_ROOT / "sessions"
-_SESSION_SUFFIX = "_instagram_state"
-# Hard cap on every ``limit``: more posts means more scrolling on the account.
+# Hard cap on every ``limit``: more posts means more requests on the account.
 MAX_LIMIT = 50
 
 
-def _candidate_session_dirs() -> list[Path]:
-    """Where to look for ``<handle>_instagram_state.json`` files, in order.
-
-    Sessions live outside the repo by default (``~/.instagram-mcp/sessions/``)
-    so a public checkout never accidentally tracks logged-in cookies.
-    ``INSTAGRAM_SESSION_DIR`` overrides the primary directory; the legacy
-    in-repo ``sessions/`` is checked second so existing local workflows keep
-    working without forced migration.
-    """
-    override = os.getenv("INSTAGRAM_SESSION_DIR", "").strip()
-    if override:
-        return [Path(override).expanduser()]
-    return [_XDG_SESSION_DIR, _LEGACY_SESSION_DIR]
-
-
-def _resolve_downloads_dir() -> Path:
-    """Where ``download_media`` writes fetched media.
-
-    Defaults to ``~/.instagram-mcp/downloads/`` so a pip-installed package
-    doesn't write into site-packages and a checkout doesn't pollute the
-    repo. ``INSTAGRAM_DOWNLOADS_DIR`` overrides it — the ``social-ingest``
-    pipeline points this straight at the vault's ``media/`` folder so
-    downloads land where the capture note expects.
-    """
-    override = os.getenv("INSTAGRAM_DOWNLOADS_DIR", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".instagram-mcp" / "downloads"
-
-
-_DOWNLOADS_DIR = _resolve_downloads_dir()
-
-
 def _resolve_session_path() -> Path:
-    explicit = os.getenv("INSTAGRAM_SESSION_FILE", "").strip()
-    if explicit:
-        return Path(explicit).expanduser()
-
-    handle = os.getenv("INSTAGRAM_USERNAME", "").strip()
-    candidates = _candidate_session_dirs()
-
-    if handle:
-        filename = f"{handle}_instagram_state.json"
-        for directory in candidates:
-            candidate = directory / filename
-            if candidate.exists():
-                return candidate
-        # No file found yet — point at the primary location for a clear error.
-        return candidates[0] / filename
-
-    for directory in candidates:
-        matches = sorted(directory.glob("*_instagram_state.json"))
-        if matches:
-            return matches[0]
-
-    return candidates[0] / "instagram_state.json"
+    """The session file, looked up on every call (a login needs no restart)."""
+    return Settings.from_env().resolve_session_path()
 
 
-def _idle_timeout() -> int:
-    raw = os.getenv("BROWSER_IDLE_TIMEOUT_S", "").strip()
-    if not raw:
-        return DEFAULT_IDLE_TIMEOUT_S
-    try:
-        return max(0, int(raw))
-    except ValueError:
-        return DEFAULT_IDLE_TIMEOUT_S
+_runtime: Runtime | None = None
 
 
-def _headless() -> bool:
-    raw = os.getenv("BROWSER_HEADLESS", "true").strip().lower()
-    return raw not in ("0", "false", "no")
-
-
-# Passed as a callable: the file is looked up on every tool call, so logging in
-# after the server was registered works without restarting it.
-_browser = BrowserSession(
-    _resolve_session_path,
-    idle_timeout_s=_idle_timeout(),
-    headless=_headless(),
-)
-
-
-def _resolve_own_handle() -> str:
-    """The authenticated account's handle, derived from the session filename.
-
-    Saved posts and collections are private, so those tools must navigate
-    under ``/<handle>/saved/...`` — and ``<handle>`` is whoever logged in.
-    """
-    session_path = _resolve_session_path()
-    stem = session_path.stem
-    if not stem.endswith(_SESSION_SUFFIX) or len(stem) <= len(_SESSION_SUFFIX):
-        raise SessionExpiredError(
-            f"Cannot determine your Instagram handle from session file "
-            f"{session_path.name!r}. Name it '<handle>_instagram_state.json' "
-            "— re-run: python -m scripts.auth_login"
+def get_runtime() -> Runtime:
+    """The process runtime (browser, lock, state), created on first use."""
+    global _runtime
+    if _runtime is None:
+        _runtime = Runtime(
+            Settings.from_env(),
+            # Late-bound so tests can patch ``_resolve_session_path``.
+            session_source=lambda: _resolve_session_path(),
         )
-    return handle_from_session_path(session_path)
+    return _runtime
 
 
 def _clamp_limit(limit: int) -> int:
@@ -169,26 +89,6 @@ def _serialize(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: _serialize(v) for k, v in value.items()}
     return value
-
-
-_http_client: httpx.AsyncClient | None = None
-
-
-def _get_http_client() -> httpx.AsyncClient:
-    """Lazily build the shared AsyncClient used for media downloads.
-
-    Created on first use so merely importing this module (e.g. in tests) never
-    opens a client. Reused across calls — httpx pools connections.
-    """
-    global _http_client
-    if _http_client is None:
-        user_agent = getattr(_browser, "user_agent", None)
-        _http_client = httpx.AsyncClient(
-            follow_redirects=True,
-            timeout=httpx.Timeout(30.0),
-            headers={"User-Agent": user_agent} if user_agent else None,
-        )
-    return _http_client
 
 
 def _select_indices(
@@ -207,6 +107,13 @@ def _select_indices(
     return [(i, item) for i, item in enumerated if i in wanted]
 
 
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write via a ``.part`` file + rename, so a crash never leaves half a file."""
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 @mcp.tool()
 async def auth_status() -> dict[str, Any]:
     """Report whether an Instagram session is loaded and likely valid.
@@ -215,10 +122,17 @@ async def auth_status() -> dict[str, Any]:
     last-modified timestamp (proxy for last login), and an `authenticated`
     flag based on the presence of `sessionid` + `ds_user_id` cookies.
 
+    Also reports ``state`` (``ok`` | ``blocked`` | ``cooldown`` | ``expired``)
+    and ``block`` (kind, detail, until) if Instagram stopped the account
+    earlier: a held account fails fast, without network, until it clears.
+
     This does NOT make a network request — to verify the session actually
     works, call any other tool. Session-expired errors there point back here.
     """
-    return session_summary(_resolve_session_path())
+    path = _resolve_session_path()
+    summary = session_summary(path)
+    summary.update(get_runtime().state.summary(Account.from_session(path)))
+    return summary
 
 
 @mcp.tool()
@@ -233,15 +147,16 @@ async def get_saved_posts(
             `get_saved_collections`). Omit for the full "All Posts" bucket.
         limit: Max posts to return (default 24, capped at 50). Keep this modest.
     """
-    handle = _resolve_own_handle()
-    async with _browser.page() as page:
-        posts = await saved.fetch_saved(
-            page,
-            handle=handle,
+    page = await get_runtime().run(
+        None,
+        lambda ig: saved.fetch_saved_page(
+            ig,
             collection_id=collection_id,
             limit=_clamp_limit(limit),
-        )
-    return _serialize(posts)
+            max_pages=MAX_PAGES_PER_CALL,
+        ),
+    )
+    return _serialize(page.items)
 
 
 @mcp.tool()
@@ -251,9 +166,7 @@ async def get_saved_collections() -> list[dict[str, Any]]:
     The implicit "All Posts" bucket is included. Pass a collection's id to
     `get_saved_posts` to read just that collection.
     """
-    handle = _resolve_own_handle()
-    async with _browser.page() as page:
-        collections = await saved.fetch_collections(page, handle=handle)
+    collections = await get_runtime().run(None, lambda ig: saved.fetch_collections(ig))
     return _serialize(collections)
 
 
@@ -264,9 +177,13 @@ async def get_home_feed(limit: int = 15) -> list[dict[str, Any]]:
     Args:
         limit: Max posts to return (default 15, capped at 50). Keep this modest.
     """
-    async with _browser.page() as page:
-        posts = await home.fetch(page, limit=_clamp_limit(limit))
-    return _serialize(posts)
+    page = await get_runtime().run(
+        None,
+        lambda ig: home.fetch_home_page(
+            ig, limit=_clamp_limit(limit), max_pages=MAX_PAGES_PER_CALL
+        ),
+    )
+    return _serialize(page.items)
 
 
 @mcp.tool()
@@ -279,8 +196,9 @@ async def get_user_profile(username: str) -> dict[str, Any] | None:
     Args:
         username: Instagram username without the leading "@".
     """
-    async with _browser.page() as page:
-        result = await profile.fetch_profile(page, username=username)
+    result = await get_runtime().run(
+        None, lambda ig: profile.fetch_profile(ig, username=username)
+    )
     return _serialize(result)
 
 
@@ -298,14 +216,17 @@ async def get_user_posts(
         include_reels: Keep reels in the result (excluded by default — use
             `get_user_reels` for a reels-only view).
     """
-    async with _browser.page() as page:
-        posts = await profile.fetch_posts(
-            page,
+    page = await get_runtime().run(
+        None,
+        lambda ig: profile.fetch_posts_page(
+            ig,
             username=username,
             limit=_clamp_limit(limit),
             include_reels=include_reels,
-        )
-    return _serialize(posts)
+            max_pages=MAX_PAGES_PER_CALL,
+        ),
+    )
+    return _serialize(page.items)
 
 
 @mcp.tool()
@@ -319,8 +240,9 @@ async def get_post(id_or_url: str) -> dict[str, Any] | None:
         id_or_url: The post shortcode (e.g. "C8xY1zAbCdE") or a full
             https://www.instagram.com/p/<shortcode>/ URL. Reel URLs work too.
     """
-    async with _browser.page() as page:
-        result = await post.fetch(page, id_or_url=id_or_url)
+    result = await get_runtime().run(
+        None, lambda ig: post.fetch(ig, id_or_url=id_or_url)
+    )
     return _serialize(result)
 
 
@@ -335,11 +257,13 @@ async def get_user_reels(
         username: Instagram username without the leading "@".
         limit: Max reels to return (default 12, capped at 50).
     """
-    async with _browser.page() as page:
-        reels = await profile.fetch_reels(
-            page, username=username, limit=_clamp_limit(limit)
-        )
-    return _serialize(reels)
+    page = await get_runtime().run(
+        None,
+        lambda ig: profile.fetch_reels_page(
+            ig, username=username, limit=_clamp_limit(limit), max_pages=MAX_PAGES_PER_CALL
+        ),
+    )
+    return _serialize(page.items)
 
 
 @mcp.tool(structured_output=False)
@@ -378,15 +302,16 @@ async def download_media(
         (``~/.instagram-mcp/downloads/`` by default, or
         ``INSTAGRAM_DOWNLOADS_DIR``).
     """
-    async with _browser.page() as page:
-        shortcode, items = await media.resolve_post_media(
-            page, id_or_url=id_or_url
-        )
+    runtime = get_runtime()
+    shortcode, items = await runtime.run(
+        None, lambda ig: media.resolve_post_media(ig, id_or_url=id_or_url)
+    )
 
     selected = _select_indices(items, indices)
 
-    _DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-    client = _get_http_client()
+    downloads_dir = Settings.from_env().downloads_dir
+    downloads_dir.mkdir(parents=True, exist_ok=True)
+    client = runtime.http_client()
 
     images: list[Image] = []
     downloaded: list[DownloadedMedia] = []
@@ -416,7 +341,9 @@ async def download_media(
 
         # Images get a safety-net cap; opted-in videos get none (user's call).
         max_bytes = None if is_video else downloader.IMAGE_MAX_BYTES
-        outcome = await downloader.fetch_bytes(client, url, max_bytes=max_bytes)
+        # CDN downloads run outside the navigation lock, two at most.
+        async with runtime.download_semaphore():
+            outcome = await downloader.fetch_bytes(client, url, max_bytes=max_bytes)
 
         if not outcome.ok or outcome.data is None:
             skipped.append(
@@ -432,8 +359,8 @@ async def download_media(
             outcome.content_type, downloader.extension_from_url(url)
         )
         ext = downloader.format_to_extension(fmt)
-        path = _DOWNLOADS_DIR / f"post_{shortcode}_{index:02d}.{ext}"
-        path.write_bytes(outcome.data)
+        path = downloads_dir / f"post_{shortcode}_{index:02d}.{ext}"
+        _write_atomic(path, outcome.data)
 
         downloaded.append(
             DownloadedMedia(
@@ -456,16 +383,25 @@ async def download_media(
     return [*images, _serialize(result)]
 
 
-def main() -> None:
+async def _amain() -> None:
     try:
-        mcp.run(transport="stdio")
-    except SessionExpiredError as exc:
-        # Surface a clean message; the MCP layer otherwise hides exceptions
-        # in stdio mode.
-        import sys
+        await mcp.run_stdio_async()
+    finally:
+        # Same event loop as the tools: close Chromium and the driver cleanly.
+        if _runtime is not None:
+            await _runtime.shutdown()
 
-        print(f"instagram-sdk: {exc}", file=sys.stderr)
-        sys.exit(2)
+
+def main() -> None:
+    # stdout is the MCP channel in stdio mode: logs go to stderr.
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=os.getenv("INSTAGRAM_LOG_LEVEL", "WARNING").upper(),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    import anyio
+
+    anyio.run(_amain)
 
 
 if __name__ == "__main__":

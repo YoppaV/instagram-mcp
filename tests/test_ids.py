@@ -61,19 +61,24 @@ class NormalizeUsernameTests(unittest.TestCase):
             normalize_username("has spaces")
 
 
-class ScrollBudgetTests(unittest.TestCase):
-    def test_reels_tab_budget_reaches_max_limit(self) -> None:
-        from instagram_sdk.endpoints._ids import (
-            MAX_SCROLLS_CAP,
-            REELS_PER_SCROLL,
-            scroll_budget,
-        )
+class PageBudgetTests(unittest.TestCase):
+    def test_budget_reaches_max_limit_and_is_capped(self) -> None:
+        from instagram_sdk.cursors import MAX_PAGES_CAP, page_budget
 
-        # The Reels tab loads 12 reels, then 3 per scroll: 50 must be reachable.
-        budget = scroll_budget(50, REELS_PER_SCROLL)
-        self.assertGreaterEqual(12 + budget * REELS_PER_SCROLL, 50)
-        self.assertLessEqual(budget, MAX_SCROLLS_CAP)
-        self.assertEqual(scroll_budget(10_000, REELS_PER_SCROLL), MAX_SCROLLS_CAP)
+        self.assertGreaterEqual(page_budget(50, 12) * 12, 50)
+        self.assertEqual(page_budget(10_000, 3), MAX_PAGES_CAP)
+        self.assertEqual(page_budget(None, 12), MAX_PAGES_CAP)
+
+
+class ShortcodeToPkTests(unittest.TestCase):
+    def test_known_pair(self) -> None:
+        from instagram_sdk.endpoints._ids import shortcode_to_pk
+
+        self.assertEqual(shortcode_to_pk("DgGMNAtNEpU"), "4036967786653960788")
+        self.assertEqual(
+            shortcode_to_pk("https://www.instagram.com/reel/DgGMNAtNEpU/"),
+            "4036967786653960788",
+        )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,94 @@
+{
+ "data": {
+  "xdt_api__v1__feed__user_timeline_graphql_connection": {
+   "edges": [
+    {
+     "node": {
+      "pk": "2101",
+      "id": "2101_500",
+      "code": "GR1",
+      "media_type": 2,
+      "taken_at": 1700000000,
+      "product_type": "clips",
+      "caption": {
+       "text": "caption GR1"
+      },
+      "like_count": 5,
+      "comment_count": 1,
+      "view_count": null,
+      "image_versions2": {
+       "candidates": [
+        {
+         "url": "https://cdn.example.com/2101.jpg",
+         "width": 1080,
+         "height": 1080
+        }
+       ]
+      },
+      "user": {
+       "pk": "500",
+       "id": "500",
+       "username": "carol",
+       "full_name": "Carol",
+       "is_verified": false,
+       "is_private": false,
+       "profile_pic_url": "https://cdn.example.com/carol.jpg"
+      },
+      "video_versions": [
+       {
+        "url": "https://cdn.example.com/2101.mp4",
+        "width": 720,
+        "height": 1280
+       }
+      ]
+     }
+    },
+    {
+     "node": {
+      "pk": "2102",
+      "id": "2102_500",
+      "code": "GR2",
+      "media_type": 2,
+      "taken_at": 1700000000,
+      "product_type": "clips",
+      "caption": {
+       "text": "caption GR2"
+      },
+      "like_count": 5,
+      "comment_count": 1,
+      "view_count": null,
+      "image_versions2": {
+       "candidates": [
+        {
+         "url": "https://cdn.example.com/2102.jpg",
+         "width": 1080,
+         "height": 1080
+        }
+       ]
+      },
+      "user": {
+       "pk": "500",
+       "id": "500",
+       "username": "carol",
+       "full_name": "Carol",
+       "is_verified": false,
+       "is_private": false,
+       "profile_pic_url": "https://cdn.example.com/carol.jpg"
+      },
+      "video_versions": [
+       {
+        "url": "https://cdn.example.com/2102.mp4",
+        "width": 720,
+        "height": 1280
+       }
+      ]
+     }
+    }
+   ],
+   "page_info": {
+    "end_cursor": "GRID_P2",
+    "has_next_page": true
+   }
+  }
+ }
+}

@@ -1,50 +1,51 @@
-"""GET a single post by shortcode or URL → Post.
+"""A single post by shortcode or URL → Post.
 
-Unlike the feeds, a single post page server-renders its data into the HTML
-(no separate XHR), so this navigates and digs the embedded JSON out.
+The post page server-renders its data into the HTML (``EMBED_POST_KEY``), so
+this loads ``/p/<code>/`` in the fixed tab — without its JS — and digs the
+embedded JSON out. The GraphQL ``post_root`` operation is registered as an
+alternative but not used (D2).
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from typing import Any
 
 from ..models import Post
 from ..parsers import find_embedded, parse_post
-from ..scraper import fetch_rendered_html
-from ._ids import EMBED_POST_KEY, extract_shortcode, post_url
-from .profile import CLIPS_PRODUCT_TYPE, reel_play_counts
+from ._ids import EMBED_POST_KEY, extract_shortcode
+from .profile import CLIPS_PRODUCT_TYPE, REEL_LOOKUP_MAX_PAGES, reel_play_counts
 
-if TYPE_CHECKING:
-    from playwright.async_api import Page
-
-# The post page carries no play count; for a reel we look it up on the
-# author's Reels tab, but only this far (~20 newest reels: 12 on load plus 3
-# per scroll) — an old reel is not worth a long scroll.
-REEL_LOOKUP_MAX_SCROLLS = 3
+POST_STRATEGY = ("html", "graphql")
 
 
-async def fetch(page: "Page", *, id_or_url: str) -> Post | None:
-    """Return the ``Post`` for a shortcode/URL, or ``None`` if it didn't load."""
+async def fetch(ig: Any, *, id_or_url: str, with_views: bool = True) -> Post | None:
+    """The ``Post`` for a shortcode/URL, or ``None`` if the page had no data.
+
+    For a reel, ``view_count`` is looked up on the author's Reels tab (best
+    effort, a few pages at most) unless ``with_views`` is False.
+    """
     shortcode = extract_shortcode(id_or_url)
-    html = await fetch_rendered_html(page, post_url(shortcode))
+    html = await ig.navigate_html(f"/p/{shortcode}/")
     web_info = find_embedded(html, EMBED_POST_KEY)
     items = web_info.get("items") if isinstance(web_info, dict) else None
     if not items:
         return None
     result = parse_post(items[0])
     if (
-        result is not None
+        with_views
+        and result is not None
         and result.product_type == CLIPS_PRODUCT_TYPE
         and result.view_count is None
         and result.author is not None
-        and result.author.username
+        and (result.author.pk or result.author.username)
     ):
         counts = await reel_play_counts(
-            page,
-            username=result.author.username,
+            ig,
+            username=result.author.username or None,
+            user_id=result.author.pk or None,
             shortcodes=[result.shortcode],
-            max_scrolls=REEL_LOOKUP_MAX_SCROLLS,
+            max_scrolls=REEL_LOOKUP_MAX_PAGES,
         )
         if result.shortcode in counts:
             result = replace(result, view_count=counts[result.shortcode])

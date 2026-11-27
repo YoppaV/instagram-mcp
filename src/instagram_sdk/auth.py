@@ -79,13 +79,122 @@ def build_user_agent(browser_version: str, system: str | None = None) -> str:
     )
 
 
-def browser_context_options(browser_version: str) -> dict[str, object]:
+def browser_context_options(
+    browser_version: str,
+    *,
+    locale: str | None = None,
+    timezone_id: str | None = None,
+) -> dict[str, object]:
     """Keyword arguments for ``browser.new_context``, shared by login and tools."""
     return {
         "viewport": VIEWPORT,
         "user_agent": build_user_agent(browser_version),
-        "locale": browser_locale(),
-        "timezone_id": browser_timezone_id(),
+        "locale": locale or browser_locale(),
+        "timezone_id": timezone_id or browser_timezone_id(),
+    }
+
+
+# --------------------------------------------------------------------------
+# Client Hints: make sec-ch-ua* and navigator.userAgentData agree with the UA.
+# --------------------------------------------------------------------------
+# Playwright's ``user_agent`` option rewrites the UA string only; the
+# ``sec-ch-ua`` headers kept saying "HeadlessChrome". The fix is a CDP
+# ``Emulation.setUserAgentOverride`` with full metadata, declaring Google
+# Chrome (what the UA string already claims) on the host's real OS.
+_GREASE_CHARS = [" ", "(", ":", "-", ".", "/", ")", ";", "=", "?", "_"]
+_GREASE_VERSIONS = ["8", "99", "24"]
+_BRAND_ORDERS = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]]
+CLIENT_HINTS_BRAND = "Google Chrome"
+
+_NAV_PLATFORMS = {"Windows": "Win32", "Darwin": "MacIntel", "Linux": "Linux x86_64"}
+_CH_PLATFORMS = {"Windows": "Windows", "Darwin": "macOS", "Linux": "Linux"}
+
+
+def greased_brands(
+    major: int, brand: str = CLIENT_HINTS_BRAND, full_version: str | None = None
+) -> list[dict[str, str]]:
+    """Chromium's brand list for ``major`` (same GREASE and order as the binary).
+
+    With ``full_version`` the versions are the full ones
+    (``sec-ch-ua-full-version-list``); the GREASE brand gets ``<v>.0.0.0``.
+    """
+    grease_v = _GREASE_VERSIONS[major % 3]
+    grease = {
+        "brand": f"Not{_GREASE_CHARS[major % 11]}A{_GREASE_CHARS[(major + 1) % 11]}Brand",
+        "version": f"{grease_v}.0.0.0" if full_version else grease_v,
+    }
+    version = full_version or str(major)
+    chromium = {"brand": "Chromium", "version": version}
+    product = {"brand": brand, "version": version}
+    order = _BRAND_ORDERS[major % 6]
+    out: list[dict[str, str]] = [{}, {}, {}]
+    out[order[0]], out[order[1]], out[order[2]] = grease, chromium, product
+    return out
+
+
+def _platform_version(system: str, release: str, mac_version: str = "") -> str:
+    if system == "Windows":
+        try:
+            build = int(platform.version().split(".")[-1])
+        except (ValueError, IndexError):
+            build = 0
+        return "15.0.0" if build >= 22000 else "10.0.0"
+    if system == "Darwin":
+        parts = (mac_version or "10.15.7").split(".")
+        return ".".join((parts + ["0", "0"])[:3])
+    match = re.match(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", release or "")
+    if not match:
+        return "0.0.0"
+    return ".".join(g or "0" for g in match.groups())
+
+
+def client_hints_metadata(
+    browser_version: str,
+    system: str | None = None,
+    *,
+    release: str | None = None,
+    machine: str | None = None,
+    mac_version: str | None = None,
+) -> dict[str, object]:
+    """``userAgentMetadata`` for ``Emulation.setUserAgentOverride``. Pure."""
+    system = system or platform.system()
+    if system not in _CH_PLATFORMS:
+        system = "Linux"
+    major = int(browser_version.split(".", 1)[0])
+    machine = (machine if machine is not None else platform.machine()).lower()
+    arm = machine.startswith(("arm", "aarch"))
+    return {
+        "brands": greased_brands(major),
+        "fullVersionList": greased_brands(major, full_version=browser_version),
+        "fullVersion": browser_version,
+        "platform": _CH_PLATFORMS[system],
+        "platformVersion": _platform_version(
+            system,
+            release if release is not None else platform.release(),
+            mac_version if mac_version is not None else platform.mac_ver()[0],
+        ),
+        "architecture": "arm" if arm else "x86",
+        "bitness": "64",
+        "model": "",
+        "mobile": False,
+        "wow64": False,
+    }
+
+
+def user_agent_override(
+    browser_version: str, locale: str | None = None, system: str | None = None
+) -> dict[str, object]:
+    """Parameters for CDP ``Emulation.setUserAgentOverride``.
+
+    Send it on a page's CDP session before its first navigation; it aligns
+    the UA string, ``sec-ch-ua*`` and ``navigator.userAgentData`` at once.
+    """
+    system = system or platform.system()
+    return {
+        "userAgent": build_user_agent(browser_version, system),
+        "acceptLanguage": locale or browser_locale(),
+        "platform": _NAV_PLATFORMS.get(system, _NAV_PLATFORMS["Linux"]),
+        "userAgentMetadata": client_hints_metadata(browser_version, system),
     }
 
 
@@ -109,8 +218,9 @@ def validate_handle(raw: str) -> str:
     return handle
 
 
-class SessionExpiredError(RuntimeError):
-    """Raised when storage_state no longer authenticates against instagram.com."""
+# Moved to ``errors``; re-exported so ``from instagram_sdk.auth import
+# SessionExpiredError`` keeps working for library users.
+from .errors import SessionExpiredError  # noqa: E402,F401
 
 
 def is_login_redirect(url: str) -> bool:

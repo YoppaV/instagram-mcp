@@ -1,1 +1,1 @@
-"""Per-resource endpoint adapters. Thin wrappers over the scraper helpers."""
+"""Per-resource endpoint adapters over the in-page client (``InPageClient``)."""

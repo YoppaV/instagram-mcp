@@ -1,7 +1,8 @@
 """End-to-end tests for the FastMCP server with mocked browser/endpoints.
 
-We import the server module, replace its ``_browser`` with a fake that yields
-an opaque page, and patch the endpoint modules to return canned dataclasses.
+We import the server module, replace its runtime with a fake that hands an
+opaque client to each tool, and patch the endpoint modules to return canned
+dataclasses.
 Asserts that the registered tools serialize results into plain dicts (which is
 what MCP clients see).
 
@@ -14,7 +15,6 @@ import asyncio
 import json
 import sys
 import unittest
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from instagram_sdk import server as server_mod  # noqa: E402
-from instagram_sdk.auth import SessionExpiredError  # noqa: E402
+from instagram_sdk.cursors import PageResult  # noqa: E402
 from instagram_sdk.models import (  # noqa: E402
     Collection,
     MediaItem,
@@ -108,10 +108,15 @@ def _make_collection(name: str = "Recipes") -> Collection:
     )
 
 
-class FakeBrowser:
-    @asynccontextmanager
-    async def page(self) -> Any:
-        yield object()  # opaque — endpoints are mocked, never touch the page
+class FakeRuntime:
+    """Stands in for ``Runtime``: runs ``fn`` with an opaque client."""
+
+    def __init__(self) -> None:
+        self.accounts: list[Any] = []
+
+    async def run(self, account: Any, fn: Any) -> Any:
+        self.accounts.append(account)
+        return await fn(object())  # endpoints are mocked, never touch it
 
 
 def _run(coro: Any) -> Any:
@@ -119,42 +124,41 @@ def _run(coro: Any) -> Any:
 
 
 def _patch_browser() -> "mock._patch":
-    return mock.patch.object(server_mod, "_browser", FakeBrowser())
+    return mock.patch.object(server_mod, "get_runtime", return_value=FakeRuntime())
 
 
-def _patch_session(name: str = "carol_instagram_state.json") -> "mock._patch":
-    return mock.patch.object(
-        server_mod, "_resolve_session_path", return_value=Path("sessions") / name
-    )
+def _page(items: list[Any]) -> PageResult:
+    return PageResult(items, None, "end")
 
 
 class AuthStatusToolTests(unittest.TestCase):
-    def test_reports_session_summary(self) -> None:
-        missing = Path("/nope")
-        with mock.patch.object(
-            server_mod, "_resolve_session_path", return_value=missing
-        ):
-            result = _run(server_mod.auth_status())
+    def test_reports_session_summary_and_state(self) -> None:
+        import tempfile
+
+        from instagram_sdk.runtime import Runtime
+        from instagram_sdk.settings import Settings
+
+        missing = Path("/nope/carol_instagram_state.json")
+        with tempfile.TemporaryDirectory() as tmp:
+            from dataclasses import replace
+
+            runtime = Runtime(replace(Settings.from_env(), state_dir=Path(tmp)),
+                              session_source=lambda: missing)
+            with mock.patch.object(
+                server_mod, "_resolve_session_path", return_value=missing
+            ), mock.patch.object(server_mod, "get_runtime", return_value=runtime):
+                result = _run(server_mod.auth_status())
         self.assertFalse(result["authenticated"])
         self.assertEqual(result["session_path"], str(missing))
-
-
-class ResolveOwnHandleTests(unittest.TestCase):
-    def test_derives_handle_from_filename(self) -> None:
-        with _patch_session("alice_instagram_state.json"):
-            self.assertEqual(server_mod._resolve_own_handle(), "alice")
-
-    def test_rejects_malformed_filename(self) -> None:
-        with _patch_session("instagram_state.json"):
-            with self.assertRaises(SessionExpiredError):
-                server_mod._resolve_own_handle()
+        self.assertEqual(result["state"], "ok")
+        self.assertIsNone(result["block"])
 
 
 class GetHomeFeedToolTests(unittest.TestCase):
     def test_serializes_posts(self) -> None:
-        fetch = mock.AsyncMock(return_value=[_make_post("1_2"), _make_post("3_4")])
+        fetch = mock.AsyncMock(return_value=_page([_make_post("1_2"), _make_post("3_4")]))
         with _patch_browser(), mock.patch(
-            "instagram_sdk.server.home.fetch", new=fetch
+            "instagram_sdk.server.home.fetch_home_page", new=fetch
         ):
             result = _run(server_mod.get_home_feed(limit=5))
         self.assertEqual([p["id"] for p in result], ["1_2", "3_4"])
@@ -183,9 +187,9 @@ class GetUserProfileToolTests(unittest.TestCase):
 
 class GetUserPostsToolTests(unittest.TestCase):
     def test_passes_include_reels(self) -> None:
-        fetch = mock.AsyncMock(return_value=[_make_post("9_9")])
+        fetch = mock.AsyncMock(return_value=_page([_make_post("9_9")]))
         with _patch_browser(), mock.patch(
-            "instagram_sdk.server.profile.fetch_posts", new=fetch
+            "instagram_sdk.server.profile.fetch_posts_page", new=fetch
         ):
             result = _run(
                 server_mod.get_user_posts(
@@ -199,9 +203,9 @@ class GetUserPostsToolTests(unittest.TestCase):
 
 class GetUserReelsToolTests(unittest.TestCase):
     def test_serializes_reels(self) -> None:
-        fetch = mock.AsyncMock(return_value=[_make_reel("5_5")])
+        fetch = mock.AsyncMock(return_value=_page([_make_reel("5_5")]))
         with _patch_browser(), mock.patch(
-            "instagram_sdk.server.profile.fetch_reels", new=fetch
+            "instagram_sdk.server.profile.fetch_reels_page", new=fetch
         ):
             result = _run(server_mod.get_user_reels(username="carol"))
         self.assertEqual(result[0]["id"], "5_5")
@@ -229,20 +233,21 @@ class GetPostToolTests(unittest.TestCase):
 
 
 class GetSavedPostsToolTests(unittest.TestCase):
-    def test_uses_derived_handle(self) -> None:
-        fetch = mock.AsyncMock(return_value=[_make_post("6001_70")])
-        with _patch_browser(), _patch_session(), mock.patch(
-            "instagram_sdk.server.saved.fetch_saved", new=fetch
+    def test_no_handle_needed(self) -> None:
+        fetch = mock.AsyncMock(return_value=_page([_make_post("6001_70")]))
+        with _patch_browser(), mock.patch(
+            "instagram_sdk.server.saved.fetch_saved_page", new=fetch
         ):
             result = _run(server_mod.get_saved_posts(limit=10))
         self.assertEqual(result[0]["id"], "6001_70")
-        self.assertEqual(fetch.call_args.kwargs["handle"], "carol")
+        self.assertNotIn("handle", fetch.call_args.kwargs)
         self.assertIsNone(fetch.call_args.kwargs["collection_id"])
+        self.assertEqual(fetch.call_args.kwargs["max_pages"], 8)
 
     def test_passes_collection_id(self) -> None:
-        fetch = mock.AsyncMock(return_value=[])
-        with _patch_browser(), _patch_session(), mock.patch(
-            "instagram_sdk.server.saved.fetch_saved", new=fetch
+        fetch = mock.AsyncMock(return_value=_page([]))
+        with _patch_browser(), mock.patch(
+            "instagram_sdk.server.saved.fetch_saved_page", new=fetch
         ):
             _run(server_mod.get_saved_posts(collection_id="17900000000000001"))
         self.assertEqual(
@@ -253,12 +258,11 @@ class GetSavedPostsToolTests(unittest.TestCase):
 class GetSavedCollectionsToolTests(unittest.TestCase):
     def test_serializes_collections(self) -> None:
         fetch = mock.AsyncMock(return_value=[_make_collection()])
-        with _patch_browser(), _patch_session(), mock.patch(
+        with _patch_browser(), mock.patch(
             "instagram_sdk.server.saved.fetch_collections", new=fetch
         ):
             result = _run(server_mod.get_saved_collections())
         self.assertEqual(result[0]["name"], "Recipes")
-        self.assertEqual(fetch.call_args.kwargs["handle"], "carol")
         json.dumps(result)
 
 
