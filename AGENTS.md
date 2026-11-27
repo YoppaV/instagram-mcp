@@ -60,9 +60,12 @@ src/instagram_sdk/
 ├── errors.py      errores tipados
 ├── auth.py        storage_state, UA y Client Hints
 ├── models.py · parsers.py · downloader.py
+├── bulk.py        descarga masiva en segundo plano (lotes, reanudable, cancelable)
+├── manifest.py    manifiesto SQLite por cuenta: lo ya descargado + los trabajos
 └── endpoints/     _ids · users · saved · home · profile · post · media
 scripts/auth_login.py     login interactivo (headed); añade una cuenta sin tocar las demás
 scripts/account_state.py  ver / limpiar el estado de bloqueo (no es tool MCP)
+scripts/bulk_download.py  la descarga masiva desde terminal (mismo trabajo que la tool)
 tests/                    unittest stdlib, fixture-driven, sin red ni navegador real
 tests/fixtures/           sintéticas/anonimizadas (gql_*, api_*, err_*, *.html)
 docs/TOOLS.md             tabla de las 10 tools y sus operaciones
