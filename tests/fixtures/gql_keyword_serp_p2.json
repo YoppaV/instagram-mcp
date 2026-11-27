@@ -1,0 +1,117 @@
+{
+ "data": {
+  "xdt_viewer": {
+   "user": {
+    "id": "999"
+   }
+  },
+  "xdt_fbsearch__top_serp_graphql": {
+   "edges": [
+    {
+     "node": {
+      "__typename": "XDTTopSerpMediaGridUnit",
+      "rank_token": "RANK",
+      "items": [
+       {
+        "__typename": "XDTMediaDict",
+        "pk": "8003",
+        "id": "8003_503",
+        "code": "TAGAAAAAAA3",
+        "media_type": 2,
+        "user": {
+         "pk": "503",
+         "id": "503",
+         "username": "erin_cooks",
+         "is_verified": false,
+         "is_unpublished": false,
+         "profile_pic_url": "https://cdn.example/erin_cooks.jpg",
+         "fbid_v2": "1784503",
+         "full_name": "Erin_Cooks",
+         "is_private": false
+        },
+        "taken_at": 1780000000,
+        "image_versions2": {
+         "candidates": [
+          {
+           "height": 480,
+           "width": 640,
+           "url": "https://cdn.example/TAGAAAAAAA3.jpg"
+          }
+         ]
+        },
+        "caption": {
+         "text": "#travel post TAGAAAAAAA3"
+        },
+        "video_versions": [
+         {
+          "url": "https://cdn.example/TAGAAAAAAA3.mp4",
+          "type": 101,
+          "height": 720,
+          "width": 960
+         }
+        ],
+        "carousel_media": null,
+        "like_count": 10,
+        "comment_count": 2,
+        "view_count": null,
+        "product_type": "clips"
+       },
+       {
+        "__typename": "XDTMediaDict",
+        "pk": "8004",
+        "id": "8004_504",
+        "code": "TAGAAAAAAA4",
+        "media_type": 2,
+        "user": {
+         "pk": "504",
+         "id": "504",
+         "username": "frank",
+         "is_verified": false,
+         "is_unpublished": false,
+         "profile_pic_url": "https://cdn.example/frank.jpg",
+         "fbid_v2": "1784504",
+         "full_name": "Frank",
+         "is_private": false
+        },
+        "taken_at": 1780000000,
+        "image_versions2": {
+         "candidates": [
+          {
+           "height": 480,
+           "width": 640,
+           "url": "https://cdn.example/TAGAAAAAAA4.jpg"
+          }
+         ]
+        },
+        "caption": {
+         "text": "#travel post TAGAAAAAAA4"
+        },
+        "video_versions": [
+         {
+          "url": "https://cdn.example/TAGAAAAAAA4.mp4",
+          "type": 101,
+          "height": 720,
+          "width": 960
+         }
+        ],
+        "carousel_media": null,
+        "like_count": 10,
+        "comment_count": 2,
+        "view_count": null,
+        "product_type": "clips"
+       }
+      ]
+     },
+     "cursor": null
+    }
+   ],
+   "page_info": {
+    "has_next_page": false,
+    "end_cursor": null
+   }
+  }
+ },
+ "extensions": {
+  "is_final": true
+ }
+}

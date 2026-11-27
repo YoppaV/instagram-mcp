@@ -1,0 +1,113 @@
+{
+ "data": {
+  "comments_media": {
+   "__typename": "XIGPolarisVideoMedia",
+   "comments_connection": {
+    "boosted_fb_comment_count": null,
+    "edges": [
+     {
+      "node": {
+       "user": {
+        "pk": "501",
+        "id": "501",
+        "username": "carolfan",
+        "is_verified": false,
+        "is_unpublished": false,
+        "profile_pic_url": "https://cdn.example/carolfan.jpg",
+        "fbid_v2": "1784501"
+       },
+       "pk": "9001",
+       "id": "9001",
+       "created_at": 1790000000,
+       "is_covered": false,
+       "is_pinned": true,
+       "has_liked_comment": false,
+       "child_comment_count": 2,
+       "parent_comment_id": null,
+       "restricted_status": null,
+       "text": "Pinned hello",
+       "giphy_media_info": null,
+       "has_translation": null,
+       "is_edited": false,
+       "fallback_user_info": null,
+       "comment_like_count": 12,
+       "__typename": "XIGComment"
+      },
+      "cursor": null
+     },
+     {
+      "node": {
+       "user": {
+        "pk": "502",
+        "id": "502",
+        "username": "dave.reads",
+        "is_verified": true,
+        "is_unpublished": false,
+        "profile_pic_url": "https://cdn.example/dave.reads.jpg",
+        "fbid_v2": "1784502"
+       },
+       "pk": "9002",
+       "id": "9002",
+       "created_at": 1790000100,
+       "is_covered": false,
+       "is_pinned": null,
+       "has_liked_comment": false,
+       "child_comment_count": 0,
+       "parent_comment_id": null,
+       "restricted_status": null,
+       "text": "Nice shot",
+       "giphy_media_info": null,
+       "has_translation": null,
+       "is_edited": true,
+       "fallback_user_info": null,
+       "comment_like_count": 3,
+       "__typename": "XIGComment"
+      },
+      "cursor": null
+     },
+     {
+      "node": {
+       "user": {
+        "pk": "503",
+        "id": "503",
+        "username": "erin_cooks",
+        "is_verified": false,
+        "is_unpublished": false,
+        "profile_pic_url": "https://cdn.example/erin_cooks.jpg",
+        "fbid_v2": "1784503"
+       },
+       "pk": "9003",
+       "id": "9003",
+       "created_at": 1790000200,
+       "is_covered": false,
+       "is_pinned": null,
+       "has_liked_comment": false,
+       "child_comment_count": 1,
+       "parent_comment_id": null,
+       "restricted_status": null,
+       "text": "Where is this?",
+       "giphy_media_info": null,
+       "has_translation": null,
+       "is_edited": false,
+       "fallback_user_info": null,
+       "comment_like_count": 0,
+       "__typename": "XIGComment"
+      },
+      "cursor": null
+     }
+    ],
+    "geoblocked_comment_notices": [],
+    "page_info": {
+     "end_cursor": "{\"cached_comments_cursor\":\"9003\",\"bifilter_token\":\"BIFILTER_A\"}",
+     "has_next_page": true,
+     "start_cursor": null,
+     "has_previous_page": false
+    }
+   },
+   "id": "POLARIS_4036967786653960788"
+  }
+ },
+ "extensions": {
+  "is_final": true
+ }
+}

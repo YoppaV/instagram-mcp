@@ -396,6 +396,9 @@ class ToolRegistrationTests(unittest.TestCase):
             "get_post",
             "get_user_reels",
             "download_media",
+            "get_post_comments",
+            "search_users",
+            "search_hashtag",
         }
         self.assertEqual(names, expected)
 

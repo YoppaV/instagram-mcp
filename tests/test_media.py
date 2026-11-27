@@ -299,7 +299,6 @@ class ToolRegistrationTests(unittest.TestCase):
         tools = _run(server_mod.mcp.list_tools())
         names = {t.name for t in tools}
         self.assertIn("download_media", names)
-        self.assertEqual(len(names), 10)
 
 
 if __name__ == "__main__":

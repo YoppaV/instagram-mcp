@@ -400,9 +400,117 @@ _REST_OPS: tuple[RestOp, ...] = (
 )
 
 
+# --------------------------------------------------------------------------
+# comments and search (endpoints/comments.py, endpoints/search.py)
+# --------------------------------------------------------------------------
+PV_COMMENTS = {
+    PV("IsMobileWeb"): False,
+    PV("LikedByAuthorBadgeEnabled"): False,
+    PV("IsLoggedIn"): True,
+    PV("ThreadsStyleCommentsEnabled"): False,
+    PV("PinnedCommentsEnabled"): False,
+}
+COMMENTS_ROOT = ("data", "comments_media", "comments_connection")
+KEYWORD_ROOT = ("data", "xdt_fbsearch__top_serp_graphql")
+
+_COMMENTS_SEARCH_OPS: tuple[GraphQLOp, ...] = (
+    GraphQLOp(
+        name="comments_first",
+        friendly_name="PolarisPostCommentsContainerQuery",
+        doc_id="28967752479583802",
+        endpoint=GRAPHQL,
+        variables={"media_id": "$media_id", **PV_COMMENTS},
+        root=COMMENTS_ROOT,
+        nullable_root=True,
+        budget_class="comments",
+        heal=HealRecipe("/p/{shortcode}/"),
+        status="V",
+    ),
+    GraphQLOp(
+        name="comments_page",
+        friendly_name="PolarisPostCommentsPaginationQuery",
+        doc_id="29250323357962155",
+        endpoint=GRAPHQL,
+        # The cursor is a JSON string {"cached_comments_cursor", "bifilter_token"}.
+        variables={
+            "after": "$after",
+            "first": 10,
+            "is_mobile_web": False,
+            "liked_by_author_badge_enabled": False,
+            "media_id": "$media_id",
+            "sort_order": "popular",
+            **PV_COMMENTS,
+        },
+        root=COMMENTS_ROOT,
+        nullable_root=True,
+        cursor_var="after",
+        budget_class="comments",
+        status="V",
+    ),
+    GraphQLOp(
+        name="comment_replies",
+        friendly_name="PolarisPostChildCommentsQuery",
+        doc_id="29474154138887404",
+        endpoint=GRAPHQL,
+        variables={
+            "after": "$after",
+            "before": None,
+            "first": None,
+            "last": None,
+            "parent_comment_id": "$comment_id",
+            PV("IsLoggedIn"): True,
+            PV("LikedByAuthorBadgeEnabled"): False,
+            PV("ThreadsStyleCommentsEnabled"): False,
+            PV("PinnedCommentsEnabled"): False,
+        },
+        root=("data", "fetch__XIGComment", "child_comments_connection"),
+        nullable_root=True,
+        cursor_var="after",
+        budget_class="comments",
+        status="C",
+    ),
+    GraphQLOp(
+        name="keyword_first",
+        friendly_name="PolarisKeywordSearchExplorePageRelayQuery",
+        doc_id="30002314729354907",
+        endpoint=GRAPHQL,
+        # One uuid4 per search, the same in both keys and on every page.
+        variables={
+            "query": "$query",
+            "search_session_id": "$session_id",
+            "serp_session_id": "$session_id",
+        },
+        root=KEYWORD_ROOT,
+        nullable_root=True,
+        budget_class="search",
+        heal=HealRecipe("/explore/search/keyword/?q={query}"),
+        status="C",
+    ),
+    GraphQLOp(
+        name="keyword_page",
+        friendly_name="PolarisKeywordSearchExplorePageRelayPaginationQuery",
+        doc_id="28175842718758182",
+        endpoint=GRAPHQL,
+        variables={
+            "after": "$after",
+            "first": 24,
+            "query": "$query",
+            "search_session_id": "$session_id",
+            "serp_session_id": "$session_id",
+        },
+        root=KEYWORD_ROOT,
+        nullable_root=True,
+        cursor_var="after",
+        budget_class="search",
+        heal=HealRecipe("/explore/search/keyword/?q={query}", "scroll"),
+        status="C",
+    ),
+)
+
+
 def _build_table() -> Mapping[str, Op]:
     table: dict[str, Op] = {}
-    for op in (*_GRAPHQL_OPS, *_REST_OPS):
+    for op in (*_GRAPHQL_OPS, *_REST_OPS, *_COMMENTS_SEARCH_OPS):
         if op.name in table:
             raise ValueError(f"duplicate op name {op.name!r}")
         if isinstance(op, GraphQLOp):

@@ -1,0 +1,80 @@
+{
+ "data": {
+  "fetch__XIGComment": {
+   "child_comments_connection": {
+    "edges": [
+     {
+      "node": {
+       "user": {
+        "pk": "502",
+        "id": "502",
+        "username": "dave.reads",
+        "is_verified": true,
+        "is_unpublished": false,
+        "profile_pic_url": "https://cdn.example/dave.reads.jpg",
+        "fbid_v2": "1784502"
+       },
+       "pk": "9101",
+       "id": "9101",
+       "created_at": 1790000000,
+       "is_covered": false,
+       "is_pinned": null,
+       "has_liked_comment": false,
+       "child_comment_count": null,
+       "parent_comment_id": "9001",
+       "restricted_status": null,
+       "text": "@carolfan thanks!",
+       "giphy_media_info": null,
+       "has_translation": null,
+       "is_edited": false,
+       "fallback_user_info": null,
+       "comment_like_count": 2,
+       "__typename": "XIGComment"
+      },
+      "cursor": null
+     },
+     {
+      "node": {
+       "user": {
+        "pk": "503",
+        "id": "503",
+        "username": "erin_cooks",
+        "is_verified": false,
+        "is_unpublished": false,
+        "profile_pic_url": "https://cdn.example/erin_cooks.jpg",
+        "fbid_v2": "1784503"
+       },
+       "pk": "9102",
+       "id": "9102",
+       "created_at": 1790000000,
+       "is_covered": false,
+       "is_pinned": null,
+       "has_liked_comment": false,
+       "child_comment_count": null,
+       "parent_comment_id": "9001",
+       "restricted_status": null,
+       "text": "Agreed",
+       "giphy_media_info": null,
+       "has_translation": null,
+       "is_edited": false,
+       "fallback_user_info": null,
+       "comment_like_count": 0,
+       "__typename": "XIGComment"
+      },
+      "cursor": null
+     }
+    ],
+    "page_info": {
+     "end_cursor": null,
+     "has_next_page": false,
+     "has_previous_page": false,
+     "start_cursor": null
+    }
+   },
+   "id": "9001"
+  }
+ },
+ "extensions": {
+  "is_final": true
+ }
+}

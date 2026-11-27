@@ -34,6 +34,9 @@ HTTP.
 | `get_post` | `id_or_url` (shortcode or post/reel URL), `account` | post or `null` |
 | `get_user_reels` | `username`, `limit` (default 12), `cursor`, `account` | page |
 | `download_media` | `id_or_url`, `indices` (optional), `download_videos` (default false), `account` | images + summary |
+| `get_post_comments` | `id_or_url` (shortcode, URL or media id), `limit` (default 20), `cursor`, `include_replies` (default false), `account` | page of comments |
+| `search_users` | `query`, `limit` (default 10), `account` | list of users |
+| `search_hashtag` | `tag` (with or without `#`), `limit` (default 24), `cursor`, `account` | page of posts |
 
 Tools return plain JSON (dataclasses serialized to dicts). `download_media`
 additionally returns inline `Image` objects for any image bytes it fetched.
